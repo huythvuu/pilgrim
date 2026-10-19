@@ -16,3 +16,6 @@ htmlcov/
 
 # Instrument manuals
 docs/manuals/**/*.pdf
+
+# Development script tests
+tests/temp/
