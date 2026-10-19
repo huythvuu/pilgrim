@@ -1,0 +1,29 @@
+# pyvisa-sim devices for checking that write_termination reaches the VISA session: each device
+# only understands commands ending in its own query termination.
+spec: "1.0"
+devices:
+  lf_terminated:
+    eom:
+      USB INSTR:
+        q: "\n"
+        r: "\n"
+    error: ERROR
+    dialogues:
+      - q: "*CLS"
+      - q: "*IDN?"
+        r: "TEKTRONIX,AFG31051,SIM0001,SCPI:99.0 FV:1.6.5"
+  crlf_terminated:
+    eom:
+      USB INSTR:
+        q: "\r\n"
+        r: "\n"
+    error: ERROR
+    dialogues:
+      - q: "*CLS"
+      - q: "*IDN?"
+        r: "TEKTRONIX,AFG31051,SIM0002,SCPI:99.0 FV:1.6.5"
+resources:
+  USB0::0x0699::0x0357::SIM0001::INSTR:
+    device: lf_terminated
+  USB0::0x0699::0x0357::SIM0002::INSTR:
+    device: crlf_terminated
