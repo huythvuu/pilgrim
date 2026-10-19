@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from pymeasure.adapters import Adapter
 from pymeasure.instruments import Instrument
 
@@ -36,4 +38,8 @@ class TektronixAFG31051(TektronixAFG31000):
     def __init__(self, adapter: Adapter | str, name: str = "Tektronix AFG31051", **kwargs) -> None:
         super().__init__(adapter, name, **kwargs)
 
-    ch1 = Instrument.ChannelCreator(TektronixAFG31051Channel, 1)
+    # Instantiation replaces the creator with the channel itself, which pyright cannot follow.
+    if TYPE_CHECKING:
+        ch1: TektronixAFG31051Channel
+    else:
+        ch1 = Instrument.ChannelCreator(TektronixAFG31051Channel, 1)
