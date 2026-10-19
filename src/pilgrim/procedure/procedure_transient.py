@@ -61,19 +61,19 @@ class TransientProcedure(Procedure):
         channel.pulse_trailing = self.trailing_edge
 
         print("Function generator will turn on with:")
-        print(f"  Frequency: {self.frequency} Hz")
-        print(f"  Duty cycle: {self.dutycycle} %")
-        print(f"  High level: {self.high_level} V")
-        print(f"  Low level: {self.low_level} V")
-        print(f"  Leading edge: {self.leading_edge} us")
-        print(f"  Trailing edge: {self.trailing_edge} us")
+        print(f"\tFrequency: {self.frequency} Hz")
+        print(f"\tDuty cycle: {self.dutycycle} %")
+        print(f"\tHigh level: {self.high_level} V")
+        print(f"\tLow level: {self.low_level} V")
+        print(f"\tLeading edge: {self.leading_edge} us")
+        print(f"\tTrailing edge: {self.trailing_edge} us")
         self.pause_confirm()
         channel.output_enabled = True
 
         print("Continuing... Settling output, please wait.")
         sleep(delay)
 
-        print("Spot check the output on the oscilloscope.")
+        print("Check the output on the oscilloscope before proceeding.")
         self.pause_confirm()
 
     def pause_confirm(self) -> None:
@@ -84,4 +84,5 @@ class TransientProcedure(Procedure):
         """
         choice = input("Procedure paused. Continue? (y/n) ")
         if choice.lower() != "y":
+            print("Modify parameters as needed and run again.")
             raise KeyboardInterrupt()
