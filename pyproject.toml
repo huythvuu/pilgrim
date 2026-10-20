@@ -60,7 +60,10 @@ docstring-code-format = true
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "tests"]
+# Setting exclude replaces pyright's defaults, so they are repeated; tests/temp holds gitignored
+# scratch scripts, which ruff skips as well.
+exclude = ["**/__pycache__", "**/node_modules", "**/.*", "tests/temp"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
