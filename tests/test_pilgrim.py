@@ -1,3 +1,5 @@
+"""Tests for the package entry point."""
+
 import pilgrim
 
 

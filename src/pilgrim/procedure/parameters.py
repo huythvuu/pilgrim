@@ -66,6 +66,12 @@ class _BoundedListParameter(experiment.VectorParameter):
         )
 
     def _list_contents(self, value: str) -> str:
+        """Return the text between the square brackets of a list string, without its units.
+
+        :param value: The list as a string, optionally followed by ``units``.
+        :returns: The stripped contents of the brackets, empty for an empty list.
+        :raises ValueError: If the value is not enclosed in square brackets.
+        """
         text = value.strip()
         if self.units is not None:
             text = text.removesuffix(f" {self.units}").rstrip()
@@ -79,6 +85,13 @@ class _BoundedListParameter(experiment.VectorParameter):
         def convert(self, value: Any) -> list[Any]: ...
 
     def _convert_element(self, element: Any) -> float:
+        """Convert one element to a float in ``units`` and check it against the bounds.
+
+        :param element: A number, Pint quantity, or string such as ``"1 kHz"``.
+        :returns: The element as a float in ``units``.
+        :raises ValueError: If the element is not a number in compatible units or lies outside
+            ``minimum`` to ``maximum``.
+        """
         try:
             quantity = ureg.Quantity(element.strip() if isinstance(element, str) else element)
             if quantity.units == ureg.dimensionless:
@@ -99,14 +112,12 @@ class _BoundedListParameter(experiment.VectorParameter):
 
 
 class FloatListParameter(_TypedParameter[list[float]], _BoundedListParameter):
-    """Float list procedure parameter of any length that reads as ``list[float]``.
+    """Float list procedure parameter of any length, even zero, that reads as ``list[float]``.
 
-    Unlike :class:`pymeasure.experiment.VectorParameter`, the list can have any length, including
-    zero.
-    Elements given with units, as Pint quantities or strings such as ``"1 kHz"``, are converted
-    to ``units``; plain numbers are taken to be in ``units`` already.
-    As a string, the value lists the elements in square brackets, optionally followed by
-    ``units``, such as ``"[100 Hz, 1 kHz, 1 MHz]"`` or ``"[100, 1000] Hz"``.
+    Elements may carry units, as Pint quantities or strings such as ``"1 kHz"``; plain numbers
+    are taken to be in ``units`` already.
+    As a string, the value is a bracketed list such as ``"[100 Hz, 1 kHz]"`` or
+    ``"[100, 1000] Hz"``.
 
     :param name: The parameter name
     :param units: The units of measure of each element
@@ -120,6 +131,7 @@ class FloatListParameter(_TypedParameter[list[float]], _BoundedListParameter):
 
         :param value: A list, tuple, or array of numbers, quantities, or strings, or a string
             listing them in square brackets.
+        :returns: The elements as floats in ``units``.
         :raises ValueError: If the value is not a list, or an element is not a number in
             compatible units or lies outside ``minimum`` to ``maximum``.
         """
@@ -136,12 +148,11 @@ class FloatListParameter(_TypedParameter[list[float]], _BoundedListParameter):
 class FloatRangeListParameter(_TypedParameter[list[tuple[float, float]]], _BoundedListParameter):
     """Float range list procedure parameter that reads as ``list[tuple[float, float]]``.
 
-    Each range is a ``(start, stop)`` pair with ``start`` no greater than ``stop``.
-    Ranges may overlap, and the list can have any length, including zero.
-    Bounds given with units, as Pint quantities or strings such as ``"1 kHz"``, are converted
-    to ``units``; plain numbers are taken to be in ``units`` already.
-    As a string, the value lists the ranges in square brackets, each in parentheses, optionally
-    followed by ``units``, such as ``"[(0, 0.25), (0.25, 0.75), (0.5, 1), (0, 1)]"`` or
+    Each range is a ``(start, stop)`` pair with ``start`` no greater than ``stop``; ranges may
+    overlap, and the list can have any length, including zero.
+    Bounds may carry units, as Pint quantities or strings such as ``"1 kHz"``; plain numbers
+    are taken to be in ``units`` already.
+    As a string, the value is ``"[(0, 0.25), (0.5, 1)]"`` or, with units,
     ``"[(100, 1000), (1 kHz, 10 kHz)] Hz"``.
 
     :param name: The parameter name
@@ -156,6 +167,7 @@ class FloatRangeListParameter(_TypedParameter[list[tuple[float, float]]], _Bound
 
         :param value: A list, tuple, or array of ``(start, stop)`` pairs of numbers, quantities,
             or strings, or a string listing them in square brackets.
+        :returns: The ranges as ``(start, stop)`` pairs of floats in ``units``.
         :raises ValueError: If the value is not a list of pairs, a bound is not a number in
             compatible units or lies outside ``minimum`` to ``maximum``, or a range starts after
             it stops.
@@ -176,6 +188,14 @@ class FloatRangeListParameter(_TypedParameter[list[tuple[float, float]]], _Bound
         return [self._convert_range(bounds) for bounds in ranges]
 
     def _convert_range(self, bounds: Any) -> tuple[float, float]:
+        """Convert one ``(start, stop)`` pair to floats in ``units`` and check its order.
+
+        :param bounds: A list, tuple, or array of two elements, each a number, quantity, or
+            string.
+        :returns: The range as a ``(start, stop)`` pair of floats in ``units``.
+        :raises ValueError: If the bounds are not a pair, a bound is not a valid element, or
+            ``start`` is greater than ``stop``.
+        """
         # Sequence patterns match lists and tuples but not strings or arrays, so convert arrays.
         match bounds.tolist() if isinstance(bounds, np.ndarray) else bounds:
             case [first, second]:

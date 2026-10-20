@@ -13,6 +13,7 @@ from pilgrim.instruments import TektronixAFG31000, TektronixAFG31000Channel
 
 CLEAR = ("*CLS", None)
 NO_ERROR = ("SYST:ERR?", '0,"No error"')
+# The "@sim" suffix selects the pyvisa-sim backend, with the YAML file as its device library.
 SIM_LIBRARY = f"{Path(__file__).with_name('afg31000_sim.yaml').as_posix()}@sim"
 
 

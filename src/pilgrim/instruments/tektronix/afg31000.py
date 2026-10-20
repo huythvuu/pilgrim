@@ -1,3 +1,5 @@
+"""Driver for the Tektronix AFG31000 series of arbitrary function generators."""
+
 from typing import Any, ClassVar
 
 from pymeasure.adapters import Adapter
@@ -9,7 +11,7 @@ type Range = tuple[float, float]
 
 
 class TektronixAFG31000Channel(Channel):
-    """A class representing a Tektronix AFG31000 series output channel.
+    """Represent a Tektronix AFG31000 series output channel.
 
     Each model subclasses this channel and defines ``<property>_values`` for every property
     named in ``model_ranges``; defining a subclass that misses one raises ``TypeError``.
@@ -44,9 +46,9 @@ class TektronixAFG31000Channel(Channel):
     shape = Channel.control(
         "SOUR{ch}:FUNC:SHAP?",
         "SOUR{ch}:FUNC:SHAP %s",
-        """Control the output waveform shape (str strictly in the built-in shapes below).
+        """Control the output waveform shape (str strictly in SIN, SQU, PULS, RAMP).
 
-        SIN (sine), SQU (square), PULS (pulse), RAMP (ramp).
+        The shapes are sine, square, pulse, and ramp.
         """,
         validator=strict_discrete_set,
         values=["SIN", "SQU", "PULS", "RAMP"],
@@ -165,6 +167,7 @@ class TektronixAFG31000Channel(Channel):
         cast=str,
     )
 
+    # The instrument takes edge times in seconds; the two edge properties expose microseconds.
     pulse_leading = Channel.control(
         "SOUR{ch}:PULS:TRAN:LEAD?",
         "SOUR{ch}:PULS:TRAN:LEAD %g",
@@ -175,8 +178,8 @@ class TektronixAFG31000Channel(Channel):
         """,
         validator=strict_range,
         dynamic=True,
-        set_process=lambda v: 1e-6 * v,  # convert microseconds to seconds
-        get_process=lambda v: 1e6 * v,  # convert seconds to microseconds
+        set_process=lambda v: 1e-6 * v,
+        get_process=lambda v: 1e6 * v,
         check_set_errors=True,
         cast=float,
     )
@@ -191,8 +194,8 @@ class TektronixAFG31000Channel(Channel):
         """,
         validator=strict_range,
         dynamic=True,
-        set_process=lambda v: 1e-6 * v,  # convert microseconds to seconds
-        get_process=lambda v: 1e6 * v,  # convert seconds to microseconds
+        set_process=lambda v: 1e-6 * v,
+        get_process=lambda v: 1e6 * v,
         check_set_errors=True,
         cast=float,
     )
@@ -200,7 +203,7 @@ class TektronixAFG31000Channel(Channel):
     output_enabled = Channel.control(
         "OUTP{ch}:STAT?",
         "OUTP{ch}:STAT %d",
-        """ Control the output state (bool).""",
+        """Control whether the output is on (bool).""",
         validator=strict_discrete_set,
         map_values=True,
         values={True: 1, False: 0},
@@ -208,9 +211,9 @@ class TektronixAFG31000Channel(Channel):
 
 
 class TektronixAFG31000(SCPIMixin, Instrument):
-    """A class representing the Tektronix AFG31000 arbitrary function generator series.
+    """Represent the Tektronix AFG31000 arbitrary function generator series.
 
-    Individual devices are represented by subclasses. Connecting clears the error queue, and
+    Individual models are represented by subclasses. Connecting clears the error queue, and
     a setting the instrument rejects raises ``ValueError``.
 
     :param adapter: VISA resource name or adapter instance.
@@ -228,7 +231,7 @@ class TektronixAFG31000(SCPIMixin, Instrument):
         **kwargs,
     ) -> None:
         super().__init__(adapter, name, write_termination=write_termination, **kwargs)
-        self.clear()  # get rid of any power up messages from error queue
+        self.clear()  # Power-up messages left in the error queue would fail the first setter.
 
     @property
     def next_error(self) -> list[float | str]:
@@ -239,6 +242,7 @@ class TektronixAFG31000(SCPIMixin, Instrument):
     def check_set_errors(self) -> list:
         """Read the error queue after setting a property and raise if it holds any errors.
 
+        :returns: An empty list, since any error raises instead.
         :raises ValueError: If the instrument reports an error, e.g. a value outside the range
             allowed by its current settings.
         """

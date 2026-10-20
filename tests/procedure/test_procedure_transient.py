@@ -6,6 +6,11 @@ from pilgrim.procedure import TransientProcedure
 
 
 def make_procedure(**parameters: object) -> TransientProcedure:
+    """Build a procedure whose parameter attributes hold the given values, as during a run.
+
+    :param parameters: Parameter values by name, in any form the parameter converts.
+    :returns: The procedure after ``refresh_parameters()``.
+    """
     procedure = TransientProcedure(**parameters)
     procedure.refresh_parameters()
     return procedure

@@ -17,6 +17,13 @@ log.addHandler(logging.NullHandler())
 
 
 class TransientProcedure(Procedure):
+    """Measure the transient response of a load to a pulsed stimulus from an AFG.
+
+    The load is stepped through each load range, and at every step the pulse frequency is
+    swept through the checkpoints.
+    The user confirms the stimulus settings before the output turns on.
+    """
+
     frequency = FloatParameter(
         "Pulse frequency", units="Hz", default=1e3, minimum=1e-3, maximum=1e6
     )
@@ -47,17 +54,23 @@ class TransientProcedure(Procedure):
     afg: TektronixAFG31051
 
     def startup(self) -> None:
-        """Connect to the instruments and configure the stimulus."""
+        """Connect to the AFG and configure the stimulus.
+
+        :raises KeyboardInterrupt: If the user declines to continue at a confirmation prompt.
+        """
         log.info("Setting up instruments.")
         self._set_up_afg(self.afg_delay)
 
     def execute(self) -> None:
+        """Step the load through each load range and sweep the frequency at every step."""
         sweep_frequencies = self.sweep_frequencies()
         load_steps = self.calc_load_steps()
         channel = self.afg.ch1
 
         for low, high in load_steps:
+            # Either order is safe: the AFG moves the other level along when they would cross.
             channel.amplitude_low, channel.amplitude_high = low, high
+            # 1 s is an assumed settling time for the load, not a measured one.
             sleep(1)
             for frequency in sweep_frequencies:
                 channel.frequency = frequency
@@ -66,12 +79,12 @@ class TransientProcedure(Procedure):
     def sweep_frequencies(self) -> list[float]:
         """Return the frequencies in Hz that the sweep steps through.
 
-        Between each pair of neighbouring checkpoints, the sweep starts at the first and steps
-        by the sweep ratio of their difference until it reaches the second.
-        The sweep ends on the last checkpoint, and is empty without checkpoints.
-        For example, a ratio of 0.01 with checkpoints at 100 Hz, 1 kHz, and 10 kHz steps by 9 Hz
-        from 100 Hz to 1 kHz, then by 90 Hz to 10 kHz.
+        Between neighbouring checkpoints, the sweep steps by the sweep ratio of their difference,
+        so a ratio of 0.01 steps by 9 Hz from 100 Hz to 1 kHz, then by 90 Hz to 10 kHz.
         When the ratio does not divide 1 evenly, the last step before each checkpoint is shorter.
+
+        :returns: The sweep frequencies in Hz, ending on the last checkpoint, or an empty list
+            without checkpoints.
         """
         if not self.checkpoints:
             return []
@@ -88,9 +101,10 @@ class TransientProcedure(Procedure):
     def calc_load_steps(self) -> list[tuple[float, float]]:
         """Return the load steps as ranges of voltages in V.
 
-        Each load step fraction is placed between the low level, at 0, and the high level, at 1.
-        For example, with a low level of -250 mV and a high level of 250 mV, the load step
-        (0.25, 0.75) is (-125 mV, 125 mV).
+        Each load range fraction is placed between the low level, at 0, and the high level, at 1,
+        so with levels of -250 mV and 250 mV the range (0.25, 0.75) becomes (-125 mV, 125 mV).
+
+        :returns: A ``(low, high)`` voltage pair in V for each load range, in the same order.
         """
         low, high = self.low_level, self.high_level
         # Weighting both levels lands 0 and 1 exactly on them, which low + f * (high - low)
@@ -108,7 +122,12 @@ class TransientProcedure(Procedure):
         log.info("Ending transient measurement.")
 
     def _set_up_afg(self, delay: float) -> None:
-        """Configure the AFG with the specified delay."""
+        """Connect to the AFG, configure the pulse, and turn the output on once confirmed.
+
+        :param delay: Seconds to let the output settle before asking for a final check.
+        :raises KeyboardInterrupt: If the user declines to continue at a confirmation prompt.
+        """
+        # Hardcoded to the bench AFG, so the procedure only runs against that unit.
         self.afg = TektronixAFG31051("USB0::0x0699::0x0357::SGVJ018478::INSTR")
         channel = self.afg.ch1
         # The output may still be on from an earlier session; keep it off until confirmed.
@@ -141,8 +160,8 @@ class TransientProcedure(Procedure):
 def pause_confirm() -> None:
     """Pause the procedure and wait for user confirmation to continue.
 
-    :raises KeyboardInterrupt: If the user declines, which the worker treats as an abort
-            and follows with :meth:`shutdown`.
+    :raises KeyboardInterrupt: If the user declines, which the worker treats as an abort and
+        follows with :meth:`TransientProcedure.shutdown`.
     """
     choice = input("Procedure paused. Continue? (y/n) ")
     if choice.lower() != "y":

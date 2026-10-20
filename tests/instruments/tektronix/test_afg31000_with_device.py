@@ -1,9 +1,9 @@
 """Device tests for the Tektronix AFG31000 base classes.
 
-Run with ``--device-address=<VISA resource name>`` of any AFG31000 model. The tests drive
-channel 1 with values valid on every model and assume it runs in continuous mode. They never
-switch the output on and skip if it already is. They save the setup to the last-setup memory
-(location 0) first and recall it afterwards.
+Run with ``--device-address=<VISA resource name>`` of any AFG31000 model.
+The tests drive channel 1 with values valid on every model, assume continuous mode, and never
+switch the output on, skipping if it already is.
+The setup is saved to memory location 0 first and recalled afterwards.
 """
 
 from typing import TYPE_CHECKING
@@ -67,19 +67,35 @@ class AnyAFG31000(TektronixAFG31000):
 
 
 def prepare(afg: TektronixAFG31000, *commands: str) -> None:
-    """Write raw setup commands and fail if the instrument rejects any of them."""
+    """Write raw setup commands and fail if the instrument rejects any of them.
+
+    :param afg: The connected instrument.
+    :param commands: SCPI commands to write in order.
+    :raises AssertionError: If the error queue is not empty afterwards.
+    """
     for command in commands:
         afg.write(command)
     assert afg.check_errors() == [], f"Instrument rejected the setup: {commands}"
 
 
 def snapshot(afg: TektronixAFG31000) -> dict[str, str]:
-    """Read the settings these tests change."""
+    """Read the settings these tests change, to compare them after restoring the setup.
+
+    :param afg: The connected instrument.
+    :returns: The raw reply to each query in ``SAVED_SETTINGS``, keyed by setting.
+    """
     return {setting: afg.ask(f"{setting}?").strip() for setting in SAVED_SETTINGS}
 
 
 @pytest.fixture(scope="module")
 def afg(connected_device_address):
+    """Connect to the instrument once per module and restore its setup afterwards.
+
+    Skips if the instrument is not an AFG31000 or channel 1 output is already on.
+
+    :param connected_device_address: VISA resource name from ``--device-address``.
+    :returns: The connected instrument, closed when the module finishes.
+    """
     instrument = AnyAFG31000(connected_device_address)
     try:
         if not instrument.id.startswith("TEKTRONIX,AFG31"):
@@ -155,6 +171,7 @@ def test_levels(afg):
 def test_low_level_above_high_level_moves_high_level_up(afg):
     prepare(afg, *SINE_INTO_50_OHM)
     afg.ch1.amplitude_low = 1.0
+    # The levels must stay at least 2 mV apart; how far the instrument moves one is unspecified.
     assert 1.0 < afg.ch1.amplitude_high <= 1.0 + 0.01
 
 

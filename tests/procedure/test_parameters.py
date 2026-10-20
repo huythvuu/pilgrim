@@ -11,6 +11,7 @@ DECADES = [100.0, 1e3, 1e4, 1e5, 1e6]
 
 @pytest.fixture
 def frequencies() -> FloatListParameter:
+    """Return a frequency list parameter in Hz, bounded to 1 mHz to 1 MHz."""
     return FloatListParameter("Frequencies", units="Hz", minimum=1e-3, maximum=1e6)
 
 
@@ -82,6 +83,7 @@ FRACTIONS = [(0.0, 0.25), (0.25, 0.75), (0.5, 1.0), (0.0, 1.0)]
 
 @pytest.fixture
 def windows() -> FloatRangeListParameter:
+    """Return a unitless range list parameter bounded to 0 to 1."""
     return FloatRangeListParameter("Windows", minimum=0, maximum=1)
 
 
