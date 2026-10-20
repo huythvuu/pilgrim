@@ -6,10 +6,12 @@ switch the output on and skip if it already is. They save the setup to the last-
 (location 0) first and recall it afterwards.
 """
 
+from typing import TYPE_CHECKING
+
 import pytest
 from pymeasure.instruments import Instrument
 
-from pilgrim.tektronix.afg31000 import TektronixAFG31000, TektronixAFG31000Channel
+from pilgrim.instruments import TektronixAFG31000, TektronixAFG31000Channel
 
 SAVED_SETTINGS = (
     "OUTP1:IMP",
@@ -57,7 +59,11 @@ class AnyAFG31000Channel(TektronixAFG31000Channel):
 class AnyAFG31000(TektronixAFG31000):
     """Any AFG31000 model, driven through channel 1."""
 
-    ch1 = Instrument.ChannelCreator(AnyAFG31000Channel, 1)
+    # Instantiation replaces the creator with the channel itself, which pyright cannot follow.
+    if TYPE_CHECKING:
+        ch1: AnyAFG31000Channel
+    else:
+        ch1 = Instrument.ChannelCreator(AnyAFG31000Channel, 1)
 
 
 def prepare(afg: TektronixAFG31000, *commands: str) -> None:

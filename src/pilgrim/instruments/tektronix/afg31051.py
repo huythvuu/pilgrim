@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from pymeasure.adapters import Adapter
 from pymeasure.instruments import Instrument
 
-from pilgrim.tektronix.afg31000 import TektronixAFG31000, TektronixAFG31000Channel
+from .afg31000 import TektronixAFG31000, TektronixAFG31000Channel
 
 
 class TektronixAFG31051Channel(TektronixAFG31000Channel):

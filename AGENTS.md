@@ -64,7 +64,9 @@ Communication requires NI-VISA installed on the host; PyVISA uses it as the back
 
 - Place instruments in `src/pilgrim/instruments/<manufacturer>/`
 - Use lowercase for all filenames to distinguish packages from CamelCase Python classes
-- Update the manufacturer's `__init__.py` file to import instruments
+- Update the manufacturer's `__init__.py` file to import instruments and their channel classes, and list them in `__all__`
+- Re-export them from `src/pilgrim/instruments/__init__.py` as well, so every driver is importable flat, as in `from pilgrim.instruments import TektronixAFG31051`
+- Inside the package, import sibling modules relatively (`from .afg31000 import ...`), not through `pilgrim.instruments`, to avoid circular imports
 - Add test files in the corresponding `tests/instruments/<manufacturer>/` directory
 - Put instrument manuals in `docs/manuals/<manufacturer>/`
 

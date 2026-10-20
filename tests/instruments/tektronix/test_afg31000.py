@@ -2,12 +2,14 @@
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from pymeasure.instruments import Instrument
 from pymeasure.test import expected_protocol
+from pyvisa.resources import MessageBasedResource
 
-from pilgrim.tektronix.afg31000 import TektronixAFG31000, TektronixAFG31000Channel
+from pilgrim.instruments import TektronixAFG31000, TektronixAFG31000Channel
 
 CLEAR = ("*CLS", None)
 NO_ERROR = ("SYST:ERR?", '0,"No error"')
@@ -28,8 +30,13 @@ class FakeChannel(TektronixAFG31000Channel):
 class FakeAFG(TektronixAFG31000):
     """Fictitious two-channel model, so channel numbering is covered too."""
 
-    ch1 = Instrument.ChannelCreator(FakeChannel, 1)
-    ch2 = Instrument.ChannelCreator(FakeChannel, 2)
+    # Instantiation replaces the creator with the channel itself, which pyright cannot follow.
+    if TYPE_CHECKING:
+        ch1: FakeChannel
+        ch2: FakeChannel
+    else:
+        ch1 = Instrument.ChannelCreator(FakeChannel, 1)
+        ch2 = Instrument.ChannelCreator(FakeChannel, 2)
 
 
 def test_init_clears_error_queue():
@@ -48,7 +55,9 @@ def test_init_clears_error_queue():
 def test_write_termination_reaches_visa_session(resource, kwargs):
     afg = FakeAFG(resource, visa_library=SIM_LIBRARY, **kwargs)
     try:
-        assert afg.adapter.connection.write_termination == kwargs.get("write_termination", "\n")
+        connection = afg.adapter.connection
+        assert isinstance(connection, MessageBasedResource)
+        assert connection.write_termination == kwargs.get("write_termination", "\n")
         assert afg.id.startswith("TEKTRONIX,AFG31051")
     finally:
         afg.adapter.close()
