@@ -91,6 +91,7 @@ def test_setter_writes_command_then_checks_errors(ch, prop, value, command):
     ("prop", "value", "command"),
     [
         ("shape", "SQU", "SOUR{ch}:FUNC:SHAP SQU"),
+        ("pulse_hold", "DUTY", "SOUR{ch}:PULS:HOLD DUTY"),
         ("output_enabled", True, "OUTP{ch}:STAT 1"),
         ("output_enabled", False, "OUTP{ch}:STAT 0"),
     ],
@@ -125,6 +126,7 @@ def test_numeric_getter(ch, prop, command, reply, value):
     [
         ("shape", "SOUR{ch}:FUNC:SHAP?", "PULS", "PULS"),
         ("amplitude_unit", "SOUR{ch}:VOLT:UNIT?", "DBM", "DBM"),
+        ("pulse_hold", "SOUR{ch}:PULS:HOLD?", "WIDT", "WIDT"),
         ("output_enabled", "OUTP{ch}:STAT?", "0", False),
         ("output_enabled", "OUTP{ch}:STAT?", "1", True),
     ],
@@ -139,6 +141,7 @@ def test_getter(ch, prop, command, reply, value):
     [
         ("shape", "SINC"),
         ("amplitude_unit", "DBMV"),
+        ("pulse_hold", "WIDTH"),
         ("frequency", 0.0),
         ("frequency", 10.1e6),
         ("offset", 5.001),
