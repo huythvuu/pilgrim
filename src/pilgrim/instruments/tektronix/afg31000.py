@@ -153,6 +153,18 @@ class TektronixAFG31000Channel(Channel):
         cast=float,
     )
 
+    pulse_hold = Channel.control(
+        "SOUR{ch}:PULS:HOLD?",
+        "SOUR{ch}:PULS:HOLD %s",
+        """Control whether the pulse width or duty cycle is held (str strictly in WIDT, DUTY).
+
+        WIDT keeps the pulse width as the period changes, and DUTY keeps the duty cycle.
+        """,
+        validator=strict_discrete_set,
+        values=["WIDT", "DUTY"],
+        cast=str,
+    )
+
     pulse_leading = Channel.control(
         "SOUR{ch}:PULS:TRAN:LEAD?",
         "SOUR{ch}:PULS:TRAN:LEAD %g",
