@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from functools import partial
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 from pymeasure.adapters import Adapter
 from pymeasure.instruments import Channel, Instrument
@@ -39,12 +39,55 @@ class TektronixMSO456Channel(Channel):
     _protected: bool
     _collection: str
 
+    display_enabled = Channel.control(
+        "DISplay:WAVEView1:CH{ch}:STATE?",
+        "DISplay:WAVEView1:CH{ch}:STATE %d",
+        """Control whether the channel is shown in the waveform view (bool).
+
+        Enabling adds the channel to the waveform view, which ``global_display_enabled``
+        requires.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
+
+    global_display_enabled = Channel.control(
+        "DISplay:GLObal:CH{ch}:STATE?",
+        "DISplay:GLObal:CH{ch}:STATE %d",
+        """Control whether the channel is displayed globally, in every view (bool).
+
+        Only takes effect once the channel has been added to the waveform view with
+        ``display_enabled``.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
+
+    trigger_level = Channel.control(
+        "TRIGger:A:LEVel:CH{ch}?",
+        "TRIGger:A:LEVel:CH{ch} %.12g",
+        """Control the A trigger level on this channel in volts (float).
+
+        Applies to the edge, pulse width, runt and transition triggers while this channel is
+        the trigger source. The instrument clamps a level outside the range it allows silently,
+        without reporting an error, so read the property back to learn the level that applies.
+        """,
+        check_set_errors=True,
+    )
+
 
 class TektronixMSO456(SCPIMixin, Instrument):
     """Represent the Tektronix MSO4/5/6 series of mixed signal oscilloscopes.
 
-    Individual models are represented by subclasses. Connecting switches response headers off and
-    verbose keywords on, which persist on the instrument, and clears the event queue.
+    Individual models are represented by subclasses, which add the analog channels beyond
+    ``ch1`` to ``ch4``. Connecting switches response headers off and verbose keywords on, which
+    persist on the instrument, and clears the event queue.
     A setting the instrument rejects raises ``ValueError``, while warnings are only logged.
 
     :param adapter: VISA resource name or adapter instance.
@@ -66,6 +109,19 @@ class TektronixMSO456(SCPIMixin, Instrument):
         self.write("HEADer OFF")
         self.write("VERBose ON")
         self.clear()  # Power-up messages left in the event queue would fail the first setter.
+
+    # Every model has these four analog channels; subclasses add the rest.
+    # Instantiation replaces the creator with the channel itself, which pyright cannot follow.
+    if TYPE_CHECKING:
+        ch1: TektronixMSO456Channel
+        ch2: TektronixMSO456Channel
+        ch3: TektronixMSO456Channel
+        ch4: TektronixMSO456Channel
+    else:
+        ch1 = Instrument.ChannelCreator(TektronixMSO456Channel, 1)
+        ch2 = Instrument.ChannelCreator(TektronixMSO456Channel, 2)
+        ch3 = Instrument.ChannelCreator(TektronixMSO456Channel, 3)
+        ch4 = Instrument.ChannelCreator(TektronixMSO456Channel, 4)
 
     @property
     def next_error(self) -> NoReturn:

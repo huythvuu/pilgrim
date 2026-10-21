@@ -6,7 +6,7 @@ import re
 import pytest
 from pymeasure.test import expected_protocol
 
-from pilgrim.instruments import TektronixMSO58B, TektronixMSO456
+from pilgrim.instruments import TektronixMSO58B, TektronixMSO456, TektronixMSO456Channel
 
 CONNECT = [("HEADer OFF", None), ("VERBose ON", None), ("*CLS", None)]
 NO_EVENT = [("*ESR?", "0"), ("ALLEv?", '0,"No events to report; queue empty"')]
@@ -183,3 +183,86 @@ def test_setter_raises_when_instrument_rejects_value():
 def test_clear_acquisitions():
     with expected_protocol(TektronixMSO456, [*CONNECT, ("CLEAR", None)]) as mso:
         mso.clear_acquisitions()
+
+
+def test_base_class_has_four_analog_channels():
+    with expected_protocol(TektronixMSO456, CONNECT) as mso:
+        assert list(mso.channels) == [1, 2, 3, 4]
+        assert all(isinstance(ch, TektronixMSO456Channel) for ch in mso.channels.values())
+        assert mso.ch1 is mso.channels[1]
+        assert not hasattr(mso, "ch5")
+
+
+def test_mso58b_has_eight_analog_channels():
+    with expected_protocol(TektronixMSO58B, CONNECT) as mso:
+        assert list(mso.channels) == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert isinstance(mso.ch8, TektronixMSO456Channel)
+        assert mso.ch8 is mso.channels[8]
+
+
+@pytest.mark.parametrize(
+    ("channel", "prop", "value", "command"),
+    [
+        ("ch1", "display_enabled", True, "DISplay:WAVEView1:CH1:STATE 1"),
+        ("ch4", "display_enabled", False, "DISplay:WAVEView1:CH4:STATE 0"),
+        ("ch1", "global_display_enabled", False, "DISplay:GLObal:CH1:STATE 0"),
+        ("ch4", "global_display_enabled", True, "DISplay:GLObal:CH4:STATE 1"),
+        ("ch1", "trigger_level", 0.25, "TRIGger:A:LEVel:CH1 0.25"),
+        ("ch4", "trigger_level", -1.5, "TRIGger:A:LEVel:CH4 -1.5"),
+        ("ch4", "trigger_level", 1.23456789123e-3, "TRIGger:A:LEVel:CH4 0.00123456789123"),
+    ],
+)
+def test_channel_setter_writes_command_then_checks_errors(channel, prop, value, command):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+        setattr(getattr(mso, channel), prop, value)
+
+
+def test_mso58b_channel_setter_substitutes_its_number():
+    command = "DISplay:WAVEView1:CH8:STATE 1"
+    with expected_protocol(TektronixMSO58B, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+        mso.ch8.display_enabled = True
+
+
+@pytest.mark.parametrize(
+    ("channel", "prop", "command", "reply", "value"),
+    [
+        ("ch1", "display_enabled", "DISplay:WAVEView1:CH1:STATE?", "0", False),
+        ("ch4", "display_enabled", "DISplay:WAVEView1:CH4:STATE?", "1", True),
+        ("ch1", "display_enabled", "DISplay:WAVEView1:CH1:STATE?", "OFF", False),
+        ("ch1", "display_enabled", "DISplay:WAVEView1:CH1:STATE?", "ON", True),
+        ("ch1", "global_display_enabled", "DISplay:GLObal:CH1:STATE?", "1", True),
+        ("ch4", "global_display_enabled", "DISplay:GLObal:CH4:STATE?", "0", False),
+        ("ch4", "global_display_enabled", "DISplay:GLObal:CH4:STATE?", "ON", True),
+        ("ch4", "global_display_enabled", "DISplay:GLObal:CH4:STATE?", "OFF", False),
+        ("ch1", "trigger_level", "TRIGger:A:LEVel:CH1?", "1.3000E+00", 1.3),
+        ("ch4", "trigger_level", "TRIGger:A:LEVel:CH4?", "-250.0000E-3", -0.25),
+    ],
+)
+def test_channel_getter(channel, prop, command, reply, value):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, reply)]) as mso:
+        result = getattr(getattr(mso, channel), prop)
+    assert result == value
+    assert type(result) is type(value)
+
+
+@pytest.mark.parametrize(
+    ("prop", "value"),
+    [
+        ("display_enabled", "ON"),
+        ("display_enabled", 2),
+        ("global_display_enabled", "OFF"),
+    ],
+)
+def test_channel_invalid_value_raises_without_writing(prop, value):
+    with expected_protocol(TektronixMSO456, CONNECT) as mso, pytest.raises(ValueError):
+        setattr(mso.ch1, prop, value)
+
+
+def test_channel_setter_raises_when_instrument_rejects_value():
+    command = "DISplay:GLObal:CH1:STATE 1"
+    reply = '221,"Settings conflict; DISPLAY:GLOBAL:CH1:STATE 1"'
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *events(reply)]) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 221, Settings conflict"),
+    ):
+        mso.ch1.global_display_enabled = True
