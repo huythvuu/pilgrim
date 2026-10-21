@@ -5,6 +5,9 @@ from .tektronix import (
     TektronixAFG31000Channel,
     TektronixAFG31051,
     TektronixAFG31051Channel,
+    TektronixMSO58B,
+    TektronixMSO456,
+    TektronixMSO456Channel,
 )
 
 __all__ = [
@@ -12,4 +15,7 @@ __all__ = [
     "TektronixAFG31000Channel",
     "TektronixAFG31051",
     "TektronixAFG31051Channel",
+    "TektronixMSO58B",
+    "TektronixMSO456",
+    "TektronixMSO456Channel",
 ]
