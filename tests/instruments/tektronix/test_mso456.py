@@ -118,3 +118,68 @@ def test_check_set_errors_returns_warnings_without_raising(caplog):
             (630, "Internal warning, 50 overload"),
         ]
     assert [r.levelname for r in caplog.records] == ["WARNING", "WARNING"]
+
+
+@pytest.mark.parametrize(
+    ("prop", "value", "command"),
+    [
+        ("acquisition_enabled", True, "ACQuire:STATE 1"),
+        ("acquisition_enabled", False, "ACQuire:STATE 0"),
+        ("stop_after", "RUNSTOP", "ACQuire:STOPAfter RUNSTOP"),
+        ("stop_after", "SEQUENCE", "ACQuire:STOPAfter SEQUENCE"),
+        ("sequence_count", 1, "ACQuire:SEQuence:NUMSEQuence 1"),
+        ("sequence_count", 300, "ACQuire:SEQuence:NUMSEQuence 300"),
+    ],
+)
+def test_setter_writes_command_then_checks_errors(prop, value, command):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+        setattr(mso, prop, value)
+
+
+@pytest.mark.parametrize(
+    ("prop", "command", "reply", "value"),
+    [
+        ("acquisition_enabled", "ACQuire:STATE?", "0", False),
+        ("acquisition_enabled", "ACQuire:STATE?", "1", True),
+        ("acquisition_enabled", "ACQuire:STATE?", "OFF", False),
+        ("acquisition_enabled", "ACQuire:STATE?", "ON", True),
+        ("stop_after", "ACQuire:STOPAfter?", "RUNSTOP", "RUNSTOP"),
+        ("stop_after", "ACQuire:STOPAfter?", "SEQUENCE", "SEQUENCE"),
+        ("sequence_count", "ACQuire:SEQuence:NUMSEQuence?", "1", 1),
+        ("acquisition_count", "ACQuire:NUMACq?", "350", 350),
+    ],
+)
+def test_getter(prop, command, reply, value):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, reply)]) as mso:
+        result = getattr(mso, prop)
+    assert result == value
+    assert type(result) is type(value)
+
+
+@pytest.mark.parametrize(
+    ("prop", "value"),
+    [
+        ("acquisition_enabled", "RUN"),
+        ("stop_after", "SINGLE"),
+        ("sequence_count", 0),
+        ("sequence_count", 1.5),
+    ],
+)
+def test_invalid_value_raises_without_writing(prop, value):
+    with expected_protocol(TektronixMSO456, CONNECT) as mso, pytest.raises(ValueError):
+        setattr(mso, prop, value)
+
+
+def test_setter_raises_when_instrument_rejects_value():
+    command = "ACQuire:SEQuence:NUMSEQuence 10000000000000"
+    reply = '222,"Data out of range; ACQUIRE:SEQUENCE:NUMSEQUENCE 10000000000000"'
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *events(reply)]) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 222, Data out of range"),
+    ):
+        mso.sequence_count = 10_000_000_000_000
+
+
+def test_clear_acquisitions():
+    with expected_protocol(TektronixMSO456, [*CONNECT, ("CLEAR", None)]) as mso:
+        mso.clear_acquisitions()
