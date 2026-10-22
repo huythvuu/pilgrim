@@ -3,9 +3,13 @@
 import logging
 import math
 import re
+from functools import partial
+from typing import NoReturn
 
 import pytest
 from pymeasure.test import expected_protocol
+from pyvisa import VisaIOError
+from pyvisa.constants import StatusCode
 
 from pilgrim.instruments import (
     TektronixMSO58B,
@@ -187,6 +191,11 @@ def test_check_set_errors_returns_warnings_without_raising(caplog):
         ("reference_level_absolute_fall_low", -1.25e-3, f"{REFLEVELS}:ABSolute:FALLLow -0.00125"),
         ("cycle_statistics_enabled", True, "MEASUrement:STATIstics:CYCLEMode 1"),
         ("cycle_statistics_enabled", False, "MEASUrement:STATIstics:CYCLEMode 0"),
+        ("image_color_mode", "NORMAL", "SAVe:IMAGe:COMPosition NORMAL"),
+        ("image_color_mode", "INVERTED", "SAVe:IMAGe:COMPosition INVERTED"),
+        ("working_directory", "C:/pilgrim_test", 'FILESystem:CWD "C:/pilgrim_test"'),
+        ("working_directory", "E:/", 'FILESystem:CWD "E:/"'),
+        ("working_directory", "Saved, Configs", 'FILESystem:CWD "Saved, Configs"'),
     ],
 )
 def test_setter_writes_command_then_checks_errors(prop, value, command):
@@ -243,6 +252,18 @@ def test_setter_writes_command_then_checks_errors(prop, value, command):
         ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "1", True),
         ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "OFF", False),
         ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "ON", True),
+        ("image_color_mode", "SAVe:IMAGe:COMPosition?", "NORMAL", "NORMAL"),
+        ("image_color_mode", "SAVe:IMAGe:COMPosition?", "INVERTED", "INVERTED"),
+        ("working_directory", "FILESystem:CWD?", '"C:/pilgrim_test"', "C:/pilgrim_test"),
+        ("working_directory", "FILESystem:CWD?", '"C:/Saved, Configs"', "C:/Saved, Configs"),
+        ("directory_listing", "FILESystem:DIR?", '""', []),
+        ("directory_listing", "FILESystem:DIR?", '"shot.png"', ["shot.png"]),
+        (
+            "directory_listing",
+            "FILESystem:DIR?",
+            '"a.png","Saved Configs","b,c.set","E:"',
+            ["a.png", "Saved Configs", "b,c.set", "E:"],
+        ),
     ],
 )
 def test_getter(prop, command, reply, value):
@@ -285,6 +306,12 @@ def test_getter(prop, command, reply, value):
         ("reference_level_percent_fall_mid", 101),
         ("cycle_statistics_enabled", "ON"),
         ("cycle_statistics_enabled", 2),
+        ("image_color_mode", "NORMal"),
+        ("image_color_mode", "ON"),
+        ("working_directory", ""),
+        ("working_directory", 'C:/"quoted"'),
+        ("working_directory", 1),
+        ("working_directory", None),
     ],
 )
 def test_invalid_value_raises_without_writing(prop, value):
@@ -789,3 +816,132 @@ def test_mso58b_measurement_source_rejects_a_ninth_channel_without_writing():
         pytest.raises(ValueError),
     ):
         mso.add_measurement(1).source = "CH9"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["C:/pilgrim_test/shot.png", "shot.PNG", "E:/shot.bmp", "shot.jpg", "shot.JPEG", "a.b/x.Jpeg"],
+)
+def test_save_image_writes_command_without_checking_errors(path):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (f'SAVe:IMAGe "{path}"', None)]) as mso:
+        mso.save_image(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["shot.gif", "shot.tif", "shot.png.bak", "shot", "shot.", "png", 'C:/"shot".png', "", 1, None],
+)
+def test_save_image_rejects_invalid_path_without_writing(path):
+    with expected_protocol(TektronixMSO456, CONNECT) as mso, pytest.raises(ValueError):
+        mso.save_image(path)
+
+
+def test_working_directory_setter_raises_when_instrument_rejects_directory():
+    command = 'FILESystem:CWD "C:/missing"'
+    reply = '256,"File name not found; Path doesn\'t exist"'
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *events(reply)]) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 256, File name not found"),
+    ):
+        mso.working_directory = "C:/missing"
+
+
+@pytest.mark.parametrize("path", ["C:/pilgrim_test", "sub"])
+def test_make_directory_sends_command_then_checks_errors(path):
+    protocol = [*CONNECT, (f'FILESystem:MKDir "{path}"', None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.make_directory(path)
+
+
+def test_make_directory_raises_when_instrument_refuses():
+    reply = '257,"Specified file is not a regular file"'
+    protocol = [*CONNECT, ('FILESystem:MKDir "C:/pilgrim_test"', None), *events(reply)]
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(ValueError, match="rejected creating directory C:/pilgrim_test: 257"),
+    ):
+        mso.make_directory("C:/pilgrim_test")
+
+
+@pytest.mark.parametrize("path", ["C:/pilgrim_test/shot.png", "shot.png", "C:/pilgrim_test"])
+def test_delete_file_sends_command_then_checks_errors(path):
+    protocol = [*CONNECT, (f'FILESystem:DELEte "{path}"', None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.delete_file(path)
+
+
+def test_delete_file_raises_when_instrument_refuses():
+    reply = '250,"Specified directory is not empty"'
+    protocol = [*CONNECT, ('FILESystem:DELEte "C:/pilgrim_test"', None), *events(reply)]
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(ValueError, match="rejected deleting C:/pilgrim_test: 250"),
+    ):
+        mso.delete_file("C:/pilgrim_test")
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) + b"IEND\xaeB`\x82"
+SHOT = "C:/pilgrim_test/shot.png"
+READ_SHOT = (f'FILESystem:READFile "{SHOT}"', None)
+# PyMeasure's ProtocolAdapter cannot simulate the end of a message, up to which the driver
+# reads, and warns that it ignores the request.
+reads_whole_message = pytest.mark.filterwarnings(
+    "ignore:Breaking on termination character:UserWarning"
+)
+
+
+@reads_whole_message
+@pytest.mark.parametrize(
+    ("reply", "contents"),
+    [(PNG + b"\n", PNG), (b"a,b\nc\n\n", b"a,b\nc\n"), (b"\n", b"")],
+)
+def test_read_file_returns_the_message_without_its_trailing_newline(reply, contents):
+    with expected_protocol(TektronixMSO456, [*CONNECT, READ_SHOT, (None, reply)]) as mso:
+        assert mso.read_file(SHOT) == contents
+
+
+def raise_visa_error(code: StatusCode, count: int, **kwargs) -> NoReturn:
+    """Stand in for ``read_bytes`` when the read fails with the VISA status ``code``.
+
+    :param code: The VISA status code of the failure.
+    :param count: Ignored; the number of bytes the driver asked for.
+    :param kwargs: Ignored; the further arguments of the read.
+    """
+    raise VisaIOError(code)
+
+
+def test_read_file_raises_when_instrument_reports_missing_file(monkeypatch):
+    reply = '256,"File name not found; Path doesn\'t exist"'
+    with expected_protocol(TektronixMSO456, [*CONNECT, READ_SHOT, *events(reply)]) as mso:
+        monkeypatch.setattr(mso, "read_bytes", partial(raise_visa_error, StatusCode.error_timeout))
+        with pytest.raises(
+            ValueError, match=re.escape(f"rejected reading file {SHOT}: 256")
+        ) as info:
+            mso.read_file(SHOT)
+    assert isinstance(info.value.__context__, VisaIOError)
+
+
+def test_read_file_reraises_timeout_when_no_event_is_queued(monkeypatch):
+    with expected_protocol(TektronixMSO456, [*CONNECT, READ_SHOT, *NO_EVENT]) as mso:
+        monkeypatch.setattr(mso, "read_bytes", partial(raise_visa_error, StatusCode.error_timeout))
+        with pytest.raises(VisaIOError, match="VI_ERROR_TMO"):
+            mso.read_file(SHOT)
+
+
+def test_read_file_reraises_other_visa_errors_without_reading_events(monkeypatch):
+    with expected_protocol(TektronixMSO456, [*CONNECT, READ_SHOT]) as mso:
+        monkeypatch.setattr(
+            mso, "read_bytes", partial(raise_visa_error, StatusCode.error_connection_lost)
+        )
+        with pytest.raises(VisaIOError, match="VI_ERROR_CONN_LOST"):
+            mso.read_file(SHOT)
+
+
+@pytest.mark.parametrize("path", ["", 'C:/"quoted".png', 1, None])
+@pytest.mark.parametrize("method", ["make_directory", "read_file", "delete_file"])
+def test_file_method_rejects_invalid_path_without_writing(method, path):
+    with (
+        expected_protocol(TektronixMSO456, CONNECT) as mso,
+        pytest.raises(ValueError, match="non-empty string without double quotes"),
+    ):
+        getattr(mso, method)(path)

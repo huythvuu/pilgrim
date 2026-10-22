@@ -17,6 +17,8 @@ from pymeasure.instruments.validators import (
     strict_discrete_set,
     strict_range,
 )
+from pyvisa import VisaIOError
+from pyvisa.constants import StatusCode
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
@@ -67,6 +69,32 @@ def _validate_table_name(name: str) -> None:
     """
     if not isinstance(name, str) or not _TABLE_NAME.fullmatch(name):
         raise ValueError(f"Results table name must be TABLE<n> with n of 1 or more, not {name!r}.")
+
+
+def _quote_path(path: str) -> str:
+    """Return ``path`` as the quoted string argument of a file system command.
+
+    :param path: The file or directory path.
+    :returns: The path in double quotes.
+    :raises ValueError: If the path is not a string, is empty or holds a double quote, which
+        would end the quoted string.
+    """
+    if not isinstance(path, str) or not path or '"' in path:
+        raise ValueError(f"Path must be a non-empty string without double quotes, not {path!r}.")
+    return f'"{path}"'
+
+
+# A directory listing is a comma separated list of quoted names, and a name may hold a comma.
+_QUOTED_NAME = re.compile(r'"([^"]*)"')
+
+
+def _directory_names(listing: str) -> list[str]:
+    """Parse the names in a directory listing, which is ``""`` for an empty directory.
+
+    :param listing: The raw reply to ``FILESystem:DIR?``.
+    :returns: The names, in the order listed.
+    """
+    return [name for name in _QUOTED_NAME.findall(listing) if name]
 
 
 def _measurement_source(value: str, values: Sequence[str]) -> str:
@@ -977,3 +1005,122 @@ class TektronixMSO456(SCPIMixin, Instrument):
         preprocess_reply=_boolean_reply,
         check_set_errors=True,
     )
+
+    image_color_mode = Instrument.control(
+        "SAVe:IMAGe:COMPosition?",
+        "SAVe:IMAGe:COMPosition %s",
+        """Control the colors of the screen images :meth:`save_image` saves (str strictly in
+        NORMAL, INVERTED).
+
+        NORMAL saves the colors as displayed, INVERTED saves them inverted.
+        """,
+        validator=strict_discrete_set,
+        values=["NORMAL", "INVERTED"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    #: The extensions :meth:`save_image` accepts, in any case; each selects the image format.
+    IMAGE_EXTENSIONS: ClassVar[tuple[str, ...]] = (".png", ".bmp", ".jpg", ".jpeg")
+
+    def save_image(self, path: str) -> None:
+        """Save a capture of the whole screen to an image file on the instrument.
+
+        The extension selects the format, PNG, Windows bitmap or JPEG (see
+        :attr:`IMAGE_EXTENSIONS`). The instrument writes nothing for another extension without
+        reporting an error, so such a path is rejected here. ``image_color_mode`` selects the
+        colors, and an existing file is overwritten.
+
+        The instrument saves in the background, so wait with ``complete`` before reading the
+        file with :meth:`read_file`. A save that fails, e.g. into a directory that does not
+        exist, queues event 200 only once it has finished, so call :meth:`check_errors` after
+        ``complete`` to detect it.
+
+        :param path: The file path, absolute like ``"C:/shots/dut1.png"`` or relative to
+            ``working_directory``.
+        :raises ValueError: If the path is empty or holds a double quote, or its extension is
+            not one of :attr:`IMAGE_EXTENSIONS`.
+        """
+        quoted = _quote_path(path)
+        if not path.lower().endswith(self.IMAGE_EXTENSIONS):
+            extensions = ", ".join(self.IMAGE_EXTENSIONS)
+            raise ValueError(f"Image path must end in one of {extensions}, not {path!r}.")
+        self.write(f"SAVe:IMAGe {quoted}")
+
+    working_directory = Instrument.control(
+        "FILESystem:CWD?",
+        "FILESystem:CWD %s",
+        """Control the directory on the instrument that relative paths in the file commands and
+        :meth:`save_image` refer to (str).
+
+        ``C:`` is the internal drive, ``E:``, ``F:`` and ``G:`` are the front USB ports and
+        ``H:`` and ``I:`` the rear ones. Forward slashes separate the directories, as in
+        ``"C:/pilgrim_test"``, and the path reads back without a trailing slash. A directory
+        that does not exist is rejected with event 256, raising ``ValueError``.
+        """,
+        set_process=_quote_path,
+        preprocess_reply=_strip_quotes,
+        maxsplit=0,  # A path may hold a comma, so the reply is not split.
+        check_set_errors=True,
+        cast=str,
+    )
+
+    directory_listing = Instrument.measurement(
+        "FILESystem:DIR?",
+        """Get the names of the files and subdirectories in ``working_directory`` (list of str),
+        empty for an empty directory.""",
+        maxsplit=0,  # A name may hold a comma, so the reply is parsed as a whole.
+        get_process=_directory_names,
+        cast=str,
+    )
+
+    def make_directory(self, path: str) -> None:
+        """Create a directory on the instrument's file system.
+
+        :param path: The directory path, absolute like ``"C:/pilgrim_test"`` or relative to
+            ``working_directory``.
+        :raises ValueError: If the path is empty or holds a double quote, or the instrument
+            refuses the directory, e.g. because it exists already (event 257).
+        """
+        self.write(f"FILESystem:MKDir {_quote_path(path)}")
+        self._raise_on_errors(f"creating directory {path}")
+
+    def read_file(self, path: str) -> bytes:
+        """Read a file from the instrument's file system and return its contents.
+
+        The adapter's read termination has to stay disabled, which is the default: with it
+        enabled, the instrument ends the transfer at the first newline in the file and then
+        blocks until a device clear.
+
+        :param path: The file path, absolute like ``"C:/shots/dut1.png"`` or relative to
+            ``working_directory``.
+        :returns: The contents of the file.
+        :raises ValueError: If the path is empty or holds a double quote, or the instrument
+            refuses the file, e.g. because it does not exist (event 256) or is a directory
+            (event 257). The instrument sends nothing then, so this is detected only once the
+            adapter's read times out.
+        """
+        self.write(f"FILESystem:READFile {_quote_path(path)}")
+        try:
+            # Reads up to the end of the message in one go; without break_on_termchar the VISA
+            # adapter reads byte by byte until it times out.
+            reply = self.read_bytes(-1, break_on_termchar=True)
+        except VisaIOError as exc:
+            if exc.error_code != StatusCode.error_timeout:
+                raise
+            self._raise_on_errors(f"reading file {path}")
+            raise
+        # The instrument sends the file bytes followed by one newline as a single message.
+        return reply.removesuffix(b"\n")
+
+    def delete_file(self, path: str) -> None:
+        """Delete a file or an empty directory from the instrument's file system.
+
+        :param path: The path, absolute like ``"C:/shots/dut1.png"`` or relative to
+            ``working_directory``.
+        :raises ValueError: If the path is empty or holds a double quote, or the instrument
+            refuses the deletion, e.g. because the path does not exist (event 256) or is a
+            directory that is not empty (event 250).
+        """
+        self.write(f"FILESystem:DELEte {_quote_path(path)}")
+        self._raise_on_errors(f"deleting {path}")
