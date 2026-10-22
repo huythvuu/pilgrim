@@ -1,12 +1,18 @@
 """Protocol tests for the Tektronix MSO4/5/6 base class."""
 
 import logging
+import math
 import re
 
 import pytest
 from pymeasure.test import expected_protocol
 
-from pilgrim.instruments import TektronixMSO58B, TektronixMSO456, TektronixMSO456Channel
+from pilgrim.instruments import (
+    TektronixMSO58B,
+    TektronixMSO456,
+    TektronixMSO456Channel,
+    TektronixMSO456Measurement,
+)
 
 CONNECT = [("HEADer OFF", None), ("VERBose ON", None), ("*CLS", None)]
 NO_EVENT = [("*ESR?", "0"), ("ALLEv?", '0,"No events to report; queue empty"')]
@@ -358,3 +364,312 @@ def test_set_trigger_level_to_midpoint():
 def test_reset_persistence():
     with expected_protocol(TektronixMSO456, [*CONNECT, ("DISplay:PERSistence:RESET", None)]) as mso:
         mso.reset_persistence()
+
+
+ADD_MEAS1 = [('MEASUrement:ADDNew "MEAS1"', None), *NO_EVENT]
+RESULT_QUERIES = {
+    "current_mean": "MEASUrement:MEAS1:RESUlts:CURRentacq:MEAN?",
+    "current_minimum": "MEASUrement:MEAS1:RESUlts:CURRentacq:MINimum?",
+    "current_maximum": "MEASUrement:MEAS1:RESUlts:CURRentacq:MAXimum?",
+    "current_peak_to_peak": "MEASUrement:MEAS1:RESUlts:CURRentacq:PK2PK?",
+    "current_standard_deviation": "MEASUrement:MEAS1:RESUlts:CURRentacq:STDDev?",
+    "mean": "MEASUrement:MEAS1:RESUlts:ALLAcqs:MEAN?",
+    "minimum": "MEASUrement:MEAS1:RESUlts:ALLAcqs:MINimum?",
+    "maximum": "MEASUrement:MEAS1:RESUlts:ALLAcqs:MAXimum?",
+    "peak_to_peak": "MEASUrement:MEAS1:RESUlts:ALLAcqs:PK2PK?",
+    "standard_deviation": "MEASUrement:MEAS1:RESUlts:ALLAcqs:STDDev?",
+}
+
+
+def test_measurements_collection_starts_empty():
+    with expected_protocol(TektronixMSO456, CONNECT) as mso:
+        assert mso.measurements == {}
+
+
+def test_measurement_types_include_those_of_the_transient_procedure():
+    needed = {"MEAN", "MINIMUM", "MAXIMUM", "TOP", "BASE", "PK2PK", "RISETIME", "FALLTIME"}
+    assert needed <= set(TektronixMSO456Measurement.TYPES)
+
+
+def test_add_measurement_sends_command_then_checks_errors_and_returns_child():
+    with expected_protocol(TektronixMSO456, [*CONNECT, *ADD_MEAS1]) as mso:
+        measurement = mso.add_measurement(1)
+        assert isinstance(measurement, TektronixMSO456Measurement)
+        assert measurement.id == 1
+        assert measurement.parent is mso
+        assert mso.measurements == {1: measurement}
+        assert getattr(mso, f"meas_{measurement.id}") is measurement
+
+
+def test_add_measurement_keeps_earlier_measurements():
+    protocol = [*CONNECT, *ADD_MEAS1, ('MEASUrement:ADDNew "MEAS12"', None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        first = mso.add_measurement(1)
+        second = mso.add_measurement(12)
+        assert mso.measurements == {1: first, 12: second}
+        assert getattr(mso, f"meas_{second.id}") is second
+
+
+@pytest.mark.parametrize("number", [0, -1, 1.0, 1.5, "1", "MEAS1"])
+def test_add_measurement_rejects_invalid_number_without_writing(number):
+    with (
+        expected_protocol(TektronixMSO456, CONNECT) as mso,
+        pytest.raises(ValueError, match="1 or more"),
+    ):
+        mso.add_measurement(number)
+
+
+def test_add_measurement_raises_when_instrument_refuses_and_adds_no_child():
+    reply = '221,"Settings conflict; Operation not allowed at this time"'
+    protocol = [*CONNECT, ('MEASUrement:ADDNew "MEAS1"', None), *events(reply)]
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(ValueError, match="rejected adding measurement 1: 221, Settings conflict"),
+    ):
+        mso.add_measurement(1)
+    assert mso.measurements == {}
+    assert not hasattr(mso, "meas_1")
+
+
+def test_delete_measurement_sends_command_then_checks_errors_and_removes_child():
+    protocol = [*CONNECT, *ADD_MEAS1, ('MEASUrement:DELete "MEAS1"', None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        measurement = mso.add_measurement(1)
+        mso.delete_measurement(measurement)
+        assert mso.measurements == {}
+        assert not hasattr(mso, "meas_1")
+
+
+def test_delete_measurement_keeps_the_other_measurements():
+    protocol = [
+        *CONNECT,
+        *ADD_MEAS1,
+        ('MEASUrement:ADDNew "MEAS2"', None),
+        *NO_EVENT,
+        ('MEASUrement:DELete "MEAS2"', None),
+        *NO_EVENT,
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        first = mso.add_measurement(1)
+        mso.delete_measurement(mso.add_measurement(2))
+        assert mso.measurements == {1: first}
+        assert not hasattr(mso, "meas_2")
+
+
+def test_delete_measurement_raises_when_instrument_refuses_and_keeps_child():
+    reply = '100,"Command error; Measurement MEAS1 does not exist"'
+    protocol = [*CONNECT, *ADD_MEAS1, ('MEASUrement:DELete "MEAS1"', None), *events(reply)]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        measurement = mso.add_measurement(1)
+        with pytest.raises(ValueError, match="rejected deleting measurement 1: 100, Command error"):
+            mso.delete_measurement(measurement)
+        assert mso.measurements == {1: measurement}
+
+
+def test_delete_all_measurements_empties_the_collection():
+    protocol = [
+        *CONNECT,
+        *ADD_MEAS1,
+        ('MEASUrement:ADDNew "MEAS2"', None),
+        *NO_EVENT,
+        ("MEASUrement:DELETEALL", None),
+        *NO_EVENT,
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.add_measurement(1)
+        mso.add_measurement(2)
+        mso.delete_all_measurements()
+        assert mso.measurements == {}
+        assert not hasattr(mso, "meas_1")
+        assert not hasattr(mso, "meas_2")
+
+
+def test_delete_all_measurements_with_none_added():
+    protocol = [*CONNECT, ("MEASUrement:DELETEALL", None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.delete_all_measurements()
+        assert mso.measurements == {}
+
+
+def test_delete_all_measurements_raises_when_instrument_refuses_and_keeps_children():
+    reply = '221,"Settings conflict; Operation not allowed at this time"'
+    protocol = [*CONNECT, *ADD_MEAS1, ("MEASUrement:DELETEALL", None), *events(reply)]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        measurement = mso.add_measurement(1)
+        with pytest.raises(ValueError, match="rejected deleting every measurement: 221"):
+            mso.delete_all_measurements()
+        assert mso.measurements == {1: measurement}
+
+
+@pytest.mark.parametrize(
+    ("reply", "names"),
+    [
+        ("NONE", []),
+        ("MEAS1", ["MEAS1"]),
+        ("MEAS1,MEAS2,MEAS7", ["MEAS1", "MEAS2", "MEAS7"]),
+    ],
+)
+def test_measurement_names(reply, names):
+    with expected_protocol(TektronixMSO456, [*CONNECT, ("MEASUrement:LIST?", reply)]) as mso:
+        assert mso.measurement_names == names
+
+
+@pytest.mark.parametrize(
+    ("prop", "value", "command"),
+    [
+        ("type", "MEAN", "MEASUrement:MEAS1:TYPe MEAN"),
+        ("type", "PK2PK", "MEASUrement:MEAS1:TYPe PK2PK"),
+        ("type", "RISETIME", "MEASUrement:MEAS1:TYPe RISETIME"),
+        ("source", "CH1", "MEASUrement:MEAS1:SOURCE CH1"),
+        ("source", "CH4", "MEASUrement:MEAS1:SOURCE CH4"),
+        ("source", "MATH1", "MEASUrement:MEAS1:SOURCE MATH1"),
+        ("source", "REF12", "MEASUrement:MEAS1:SOURCE REF12"),
+        ("label", "Rise", 'MEASUrement:MEAS1:LABel "Rise"'),
+        ("label", "", 'MEASUrement:MEAS1:LABel ""'),
+        ("population_limit_enabled", True, "MEASUrement:MEAS1:POPUlation:LIMIT:STATE 1"),
+        ("population_limit_enabled", False, "MEASUrement:MEAS1:POPUlation:LIMIT:STATE 0"),
+        ("population_limit", 1, "MEASUrement:MEAS1:POPUlation:LIMIT:VALue 1"),
+        ("population_limit", 300, "MEASUrement:MEAS1:POPUlation:LIMIT:VALue 300"),
+        ("uses_global_population_limit", True, "MEASUrement:MEAS1:POPUlation:GLOBal 1"),
+        ("uses_global_population_limit", False, "MEASUrement:MEAS1:POPUlation:GLOBal 0"),
+        ("badge_statistics_enabled", True, "MEASUrement:MEAS1:DISPlaystat:ENABle 1"),
+        ("badge_statistics_enabled", False, "MEASUrement:MEAS1:DISPlaystat:ENABle 0"),
+    ],
+)
+def test_measurement_setter_writes_command_then_checks_errors(prop, value, command):
+    protocol = [*CONNECT, *ADD_MEAS1, (command, None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        setattr(mso.add_measurement(1), prop, value)
+
+
+def test_measurement_setter_substitutes_its_number():
+    protocol = [
+        *CONNECT,
+        ('MEASUrement:ADDNew "MEAS12"', None),
+        *NO_EVENT,
+        ("MEASUrement:MEAS12:TYPe FALLTIME", None),
+        *NO_EVENT,
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.add_measurement(12).type = "FALLTIME"
+
+
+def test_label_round_trips_percent_quotes_and_non_ascii_text():
+    label = 'Rise 50% "µs", fast'
+    encoded = "Rise%2050%25%20%22%C2%B5s%22%2C%20fast"
+    protocol = [
+        *CONNECT,
+        *ADD_MEAS1,
+        (f'MEASUrement:MEAS1:LABel "{encoded}"', None),
+        *NO_EVENT,
+        ("MEASUrement:MEAS1:LABel?", f'"{encoded}"'),
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        measurement = mso.add_measurement(1)
+        measurement.label = label
+        assert measurement.label == label
+
+
+@pytest.mark.parametrize(
+    ("prop", "command", "reply", "value"),
+    [
+        ("type", "MEASUrement:MEAS1:TYPe?", "AMPLITUDE", "AMPLITUDE"),
+        ("type", "MEASUrement:MEAS1:TYPe?", "PK2PK", "PK2PK"),
+        ("source", "MEASUrement:MEAS1:SOURCE?", "CH2", "CH2"),
+        ("source", "MEASUrement:MEAS1:SOURCE?", "MATH1", "MATH1"),
+        ("label", "MEASUrement:MEAS1:LABel?", '"Rise"', "Rise"),
+        ("label", "MEASUrement:MEAS1:LABel?", '""', ""),
+        ("current_mean", RESULT_QUERIES["current_mean"], "2.2807617754647", 2.2807617754647),
+        ("current_minimum", RESULT_QUERIES["current_minimum"], "2.260", 2.26),
+        ("current_maximum", RESULT_QUERIES["current_maximum"], "2.280", 2.28),
+        ("current_peak_to_peak", RESULT_QUERIES["current_peak_to_peak"], "0.0E+0", 0.0),
+        ("current_population", "MEASUrement:MEAS1:RESUlts:CURRentacq:POPUlation?", "1", 1),
+        ("current_population", "MEASUrement:MEAS1:RESUlts:CURRentacq:POPUlation?", "0", 0),
+        ("current_standard_deviation", RESULT_QUERIES["current_standard_deviation"], "0.0E+0", 0.0),
+        ("mean", RESULT_QUERIES["mean"], "2.2807617754647", 2.2807617754647),
+        ("minimum", RESULT_QUERIES["minimum"], "2.220", 2.22),
+        ("maximum", RESULT_QUERIES["maximum"], "2.420", 2.42),
+        ("peak_to_peak", RESULT_QUERIES["peak_to_peak"], "200.0E-3", 0.2),
+        ("population", "MEASUrement:MEAS1:RESUlts:ALLAcqs:POPUlation?", "29825", 29825),
+        ("standard_deviation", RESULT_QUERIES["standard_deviation"], "1.2345E-3", 0.0012345),
+        ("population_limit_enabled", "MEASUrement:MEAS1:POPUlation:LIMIT:STATE?", "1", True),
+        ("population_limit_enabled", "MEASUrement:MEAS1:POPUlation:LIMIT:STATE?", "OFF", False),
+        ("population_limit", "MEASUrement:MEAS1:POPUlation:LIMIT:VALue?", "1000", 1000),
+        ("uses_global_population_limit", "MEASUrement:MEAS1:POPUlation:GLOBal?", "0", False),
+        ("uses_global_population_limit", "MEASUrement:MEAS1:POPUlation:GLOBal?", "ON", True),
+        ("badge_statistics_enabled", "MEASUrement:MEAS1:DISPlaystat:ENABle?", "1", True),
+    ],
+)
+def test_measurement_getter(prop, command, reply, value):
+    with expected_protocol(TektronixMSO456, [*CONNECT, *ADD_MEAS1, (command, reply)]) as mso:
+        result = getattr(mso.add_measurement(1), prop)
+    assert result == value
+    assert type(result) is type(value)
+
+
+@pytest.mark.parametrize("reply", ["9.91E+37", "9.9100E+37"])
+@pytest.mark.parametrize(("prop", "command"), list(RESULT_QUERIES.items()))
+def test_measurement_invalid_result_reads_as_nan(prop, command, reply):
+    with expected_protocol(TektronixMSO456, [*CONNECT, *ADD_MEAS1, (command, reply)]) as mso:
+        assert math.isnan(getattr(mso.add_measurement(1), prop))
+
+
+def test_measurement_result_below_the_invalid_value_is_kept():
+    reply = "9.9E+37"
+    protocol = [*CONNECT, *ADD_MEAS1, (RESULT_QUERIES["maximum"], reply)]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        assert mso.add_measurement(1).maximum == float(reply)
+
+
+@pytest.mark.parametrize(
+    ("prop", "value"),
+    [
+        ("type", "AMPL"),
+        ("type", "mean"),
+        ("type", "TIE"),
+        ("source", "CH5"),
+        ("source", "ch1"),
+        ("source", "CH1_D0"),
+        ("source", "MATH0"),
+        ("source", "MATH"),
+        ("source", "REF1.5"),
+        ("source", 1),
+        ("population_limit_enabled", "ON"),
+        ("population_limit", 0),
+        ("population_limit", 1.5),
+        ("population_limit", -1),
+        ("uses_global_population_limit", 2),
+        ("badge_statistics_enabled", "OFF"),
+    ],
+)
+def test_measurement_invalid_value_raises_without_writing(prop, value):
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, *ADD_MEAS1]) as mso,
+        pytest.raises(ValueError),
+    ):
+        setattr(mso.add_measurement(1), prop, value)
+
+
+def test_measurement_setter_raises_when_instrument_rejects_value():
+    command = "MEASUrement:MEAS1:SOURCE REF1"
+    reply = '221,"Settings conflict; MEASUREMENT:MEAS1:SOURCE REF1"'
+    protocol = [*CONNECT, *ADD_MEAS1, (command, None), *events(reply)]
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 221, Settings conflict"),
+    ):
+        mso.add_measurement(1).source = "REF1"
+
+
+def test_mso58b_measurement_source_accepts_its_eight_channels():
+    protocol = [*CONNECT, *ADD_MEAS1, ("MEASUrement:MEAS1:SOURCE CH8", None), *NO_EVENT]
+    with expected_protocol(TektronixMSO58B, protocol) as mso:
+        mso.add_measurement(1).source = "CH8"
+
+
+def test_mso58b_measurement_source_rejects_a_ninth_channel_without_writing():
+    with (
+        expected_protocol(TektronixMSO58B, [*CONNECT, *ADD_MEAS1]) as mso,
+        pytest.raises(ValueError),
+    ):
+        mso.add_measurement(1).source = "CH9"

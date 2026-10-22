@@ -3,8 +3,10 @@
 import logging
 import math
 import re
+from collections.abc import Sequence
 from functools import partial
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, ClassVar, NoReturn
+from urllib.parse import quote, unquote
 
 from pymeasure.adapters import Adapter
 from pymeasure.instruments import Channel, Instrument
@@ -33,6 +35,37 @@ _BOOLEAN_REPLIES = {"OFF": "0", "ON": "1"}
 def _boolean_reply(reply: str) -> str:
     """Translate the keyword form of a boolean reply to its digit form."""
     return _BOOLEAN_REPLIES.get(reply, reply)
+
+
+# A measurement result the instrument cannot compute reads as 9.91E+37, the IEEE 488.2 value for
+# "not a number".
+INVALID_RESULT = 9.91e37
+# A measurement can take a math or reference waveform as its source; their number is not fixed.
+_WAVEFORM_SOURCE = re.compile(r"(MATH|REF)[1-9]\d*")
+
+
+def _nan_if_invalid(value: float) -> float:
+    """Translate the instrument's invalid-result value to NaN."""
+    return math.nan if value >= INVALID_RESULT else value
+
+
+def _strip_quotes(reply: str) -> str:
+    """Strip the double quotes that delimit a string reply."""
+    return reply.removeprefix('"').removesuffix('"')
+
+
+def _measurement_source(value: str, values: Sequence[str]) -> str:
+    """Validate a measurement source: an analog channel in ``values`` or any MATH<n> or REF<n>.
+
+    :param value: The source to validate.
+    :param values: The analog channels of the instrument, e.g. ``["CH1", "CH2"]``.
+    :returns: ``value`` unchanged.
+    :raises ValueError: If the value is neither a listed channel nor a math or reference
+        waveform.
+    """
+    if value in values or (isinstance(value, str) and _WAVEFORM_SOURCE.fullmatch(value)):
+        return value
+    raise ValueError(f"Value of {value} is not in {list(values)} or of the form MATH<n> or REF<n>")
 
 
 class TektronixMSO456Channel(Channel):
@@ -86,12 +119,292 @@ class TektronixMSO456Channel(Channel):
     )
 
 
+class TektronixMSO456Measurement(Channel):
+    """Represent one measurement, ``MEAS<n>``, of the Tektronix MSO4/5/6 series oscilloscopes.
+
+    Instances are created with :meth:`TektronixMSO456.add_measurement` and removed with
+    :meth:`TektronixMSO456.delete_measurement`; ``id`` is the measurement number. The type a
+    new measurement starts with is not fixed (the bench showed PERIOD and AMPLITUDE), so set
+    ``type`` before use.
+
+    Every acquisition adds values to the statistics: one for a whole-record type such as MEAN or
+    MAXIMUM, and one per edge or cycle in the record for a per-cycle type such as RISETIME or
+    FREQUENCY. The ``current_*`` results cover the latest acquisition only; the others
+    accumulate over all acquisitions until :meth:`TektronixMSO456.clear_acquisitions` or a new
+    single sequence resets them. A result the instrument cannot compute, e.g. an edge time on a
+    signal of too low amplitude, reads as NaN and queues a measurement error (22xx) or warning
+    (54x), which :meth:`TektronixMSO456.check_errors` reads.
+    """
+
+    # Required by PyMeasure's Child protocol, which add_child is typed against.
+    _name: str
+    _protected: bool
+    _collection: str
+    # Set by add_measurement to the analog channels of the model.
+    source_values: list[str]
+
+    #: The measurement types every model provides without an option (manual pages 945 to 951);
+    #: ``type`` accepts these. The types that need two sources (DELAY, HOLD, PHASE, SETUP, SKEW)
+    #: use a second source this driver does not configure.
+    TYPES: ClassVar[list[str]] = [
+        "ACRMS",
+        "AMPLITUDE",
+        "AREA",
+        "BASE",
+        "BURSTWIDTH",
+        "DELAY",
+        "FALLSLEWRATE",
+        "FALLTIME",
+        "FREQUENCY",
+        "HIGHTIME",
+        "HOLD",
+        "LOWTIME",
+        "MAXIMUM",
+        "MEAN",
+        "MINIMUM",
+        "NDUTY",
+        "NOVERSHOOT",
+        "NPERIOD",
+        "NWIDTH",
+        "PDUTY",
+        "PERIOD",
+        "PHASE",
+        "PK2PK",
+        "POVERSHOOT",
+        "PWIDTH",
+        "RISESLEWRATE",
+        "RISETIME",
+        "RMS",
+        "SETUP",
+        "SKEW",
+        "TIMEOUTSIDELEVEL",
+        "TOP",
+    ]
+
+    type = Channel.control(
+        "MEASUrement:MEAS{ch}:TYPe?",
+        "MEASUrement:MEAS{ch}:TYPe %s",
+        """Control the measurement type (str strictly in :attr:`TYPES`, e.g. MEAN, MINIMUM,
+        MAXIMUM, TOP, BASE, PK2PK, RISETIME, FALLTIME).
+
+        Per-cycle types such as RISETIME, FALLTIME, PERIOD and FREQUENCY are taken on every
+        edge or cycle in the record, so their ``population`` grows by several values per
+        acquisition, while MEAN, MINIMUM, MAXIMUM, TOP, BASE and PK2PK add one value per
+        acquisition. FREQUENCY, PERIOD and PDUTY need two rising edges in the record, otherwise
+        they read as NaN with a 540 warning.
+        """,
+        validator=strict_discrete_set,
+        values=TYPES,
+        check_set_errors=True,
+        cast=str,
+    )
+
+    source = Channel.control(
+        "MEASUrement:MEAS{ch}:SOURCE?",
+        "MEASUrement:MEAS{ch}:SOURCE %s",
+        """Control the waveform the measurement is taken on (str strictly in CH1 to CH<n>,
+        MATH<n>, REF<n>).
+
+        The analog channels are those of the model, CH1 to CH4 on every model and up to CH8 on
+        the MSO58B. A math or reference waveform must exist on the instrument, which this driver
+        cannot check, so the instrument rejects a missing one.
+        """,
+        validator=_measurement_source,
+        values=["CH1", "CH2", "CH3", "CH4"],
+        check_set_errors=True,
+        cast=str,
+        dynamic=True,
+    )
+
+    label = Channel.control(
+        "MEASUrement:MEAS{ch}:LABel?",
+        'MEASUrement:MEAS{ch}:LABel "%s"',
+        """Control the label shown on the measurement badge and in the results table (str).
+
+        Any text round-trips, including quotes, commas, percent signs and non-ASCII characters;
+        the instrument stores it percent-encoded.
+        """,
+        set_process=partial(quote, safe=""),
+        preprocess_reply=_strip_quotes,
+        get_process=unquote,
+        check_set_errors=True,
+        cast=str,
+    )
+
+    current_mean = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:CURRentacq:MEAN?",
+        """Measure the mean of the values from the latest acquisition (float, NaN if invalid).
+
+        For a whole-record type this is the single value of the acquisition. Reads as NaN once
+        ``population_limit`` is reached.
+        """,
+        get_process=_nan_if_invalid,
+    )
+
+    current_minimum = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:CURRentacq:MINimum?",
+        """Measure the minimum of the values from the latest acquisition (float, NaN if invalid).
+
+        Reads as NaN once ``population_limit`` is reached.
+        """,
+        get_process=_nan_if_invalid,
+    )
+
+    current_maximum = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:CURRentacq:MAXimum?",
+        """Measure the maximum of the values from the latest acquisition (float, NaN if invalid).
+
+        Reads as NaN once ``population_limit`` is reached.
+        """,
+        get_process=_nan_if_invalid,
+    )
+
+    current_peak_to_peak = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:CURRentacq:PK2PK?",
+        """Measure the spread of the values from the latest acquisition (float, NaN if invalid).
+
+        Zero for a whole-record type, which has a single value per acquisition. Reads as NaN
+        once ``population_limit`` is reached.
+        """,
+        get_process=_nan_if_invalid,
+    )
+
+    current_population = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:CURRentacq:POPUlation?",
+        """Measure the number of values from the latest acquisition (int).
+
+        One for a whole-record type, one per edge or cycle for a per-cycle type, and 0 once
+        ``population_limit`` is reached.
+        """,
+        cast=int,
+    )
+
+    current_standard_deviation = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:CURRentacq:STDDev?",
+        """Measure the standard deviation of the values from the latest acquisition (float, NaN
+        if invalid).
+
+        Zero for a whole-record type, which has a single value per acquisition. Reads as NaN
+        once ``population_limit`` is reached.
+        """,
+        get_process=_nan_if_invalid,
+    )
+
+    mean = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:ALLAcqs:MEAN?",
+        """Measure the mean of the values accumulated over all acquisitions (float, NaN if
+        invalid).""",
+        get_process=_nan_if_invalid,
+    )
+
+    minimum = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:ALLAcqs:MINimum?",
+        """Measure the minimum of the values accumulated over all acquisitions (float, NaN if
+        invalid).""",
+        get_process=_nan_if_invalid,
+    )
+
+    maximum = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:ALLAcqs:MAXimum?",
+        """Measure the maximum of the values accumulated over all acquisitions (float, NaN if
+        invalid).""",
+        get_process=_nan_if_invalid,
+    )
+
+    peak_to_peak = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:ALLAcqs:PK2PK?",
+        """Measure the spread of the values accumulated over all acquisitions (float, NaN if
+        invalid).""",
+        get_process=_nan_if_invalid,
+    )
+
+    population = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:ALLAcqs:POPUlation?",
+        """Measure the number of values accumulated over all acquisitions (int).
+
+        Grows by one per acquisition for a whole-record type and by one per edge or cycle for a
+        per-cycle type, and stops at ``population_limit`` while the limit is enabled.
+        """,
+        cast=int,
+    )
+
+    standard_deviation = Channel.measurement(
+        "MEASUrement:MEAS{ch}:RESUlts:ALLAcqs:STDDev?",
+        """Measure the standard deviation of the values accumulated over all acquisitions (float,
+        NaN if invalid).""",
+        get_process=_nan_if_invalid,
+    )
+
+    population_limit_enabled = Channel.control(
+        "MEASUrement:MEAS{ch}:POPUlation:LIMIT:STATE?",
+        "MEASUrement:MEAS{ch}:POPUlation:LIMIT:STATE %d",
+        """Control whether the statistics stop after ``population_limit`` values (bool).
+
+        Acquisition carries on at the limit, but the all-acquisitions statistics freeze and the
+        ``current_*`` results read as NaN with a population of 0. Disabling the limit resumes
+        the statistics where they stopped. Applies only while ``uses_global_population_limit``
+        is False.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
+
+    population_limit = Channel.control(
+        "MEASUrement:MEAS{ch}:POPUlation:LIMIT:VALue?",
+        "MEASUrement:MEAS{ch}:POPUlation:LIMIT:VALue %d",
+        """Control the number of values after which the statistics stop (int strictly 1 or
+        more).
+
+        Applies while ``population_limit_enabled`` is True. Counts values, not acquisitions, so
+        a per-cycle type reaches it after fewer acquisitions than a whole-record type.
+        """,
+        validator=partial(strict_discrete_range, step=1),
+        values=[1, math.inf],
+        check_set_errors=True,
+        cast=int,
+    )
+
+    uses_global_population_limit = Channel.control(
+        "MEASUrement:MEAS{ch}:POPUlation:GLOBal?",
+        "MEASUrement:MEAS{ch}:POPUlation:GLOBal %d",
+        """Control whether the instrument's global population limit applies to this measurement
+        instead of ``population_limit_enabled`` and ``population_limit`` (bool).
+
+        A new measurement defaults to False. The global limit is not configurable through this
+        driver.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
+
+    badge_statistics_enabled = Channel.control(
+        "MEASUrement:MEAS{ch}:DISPlaystat:ENABle?",
+        "MEASUrement:MEAS{ch}:DISPlaystat:ENABle %d",
+        """Control whether the measurement badge on the display shows the statistics (bool).
+
+        Affects only the display; the statistics are computed and readable regardless.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
+
+
 class TektronixMSO456(SCPIMixin, Instrument):
     """Represent the Tektronix MSO4/5/6 series of mixed signal oscilloscopes.
 
     Individual models are represented by subclasses, which add the analog channels beyond
-    ``ch1`` to ``ch4``. Connecting switches response headers off and verbose keywords on, which
-    persist on the instrument, and clears the event queue.
+    ``ch1`` to ``ch4``. Measurements are added at runtime with :meth:`add_measurement` and
+    collected in ``measurements``. Connecting switches response headers off and verbose keywords
+    on, which persist on the instrument, and clears the event queue.
     A setting the instrument rejects raises ``ValueError``, while warnings are only logged.
 
     :param adapter: VISA resource name or adapter instance.
@@ -116,6 +429,8 @@ class TektronixMSO456(SCPIMixin, Instrument):
         # The edge trigger accepts every analog channel of the model, so the set is derived from
         # the channels the class declared, which the subclasses extend.
         self.trigger_source_values = [f"CH{n}" for n in self.channels] + ["LINE", "AUXILIARY"]
+        #: The measurements added with :meth:`add_measurement`, by number.
+        self.measurements: dict[int, TektronixMSO456Measurement] = {}
 
     # Every model has these four analog channels; subclasses add the rest.
     # Instantiation replaces the creator with the channel itself, which pyright cannot follow.
@@ -164,11 +479,20 @@ class TektronixMSO456(SCPIMixin, Instrument):
         :raises ValueError: If the instrument reports an error, e.g. a value outside the range
             allowed by its current settings.
         """
+        return self._raise_on_errors("the setting")
+
+    def _raise_on_errors(self, subject: str) -> list[tuple[int, str]]:
+        """Read the event queue and raise ``ValueError`` naming ``subject`` if it holds errors.
+
+        :param subject: What the instrument rejected, e.g. "the setting".
+        :returns: The warnings read from the queue, since any error raises instead.
+        :raises ValueError: If the instrument reports an error.
+        """
         events = self.check_errors()
         errors = [(code, message) for code, message in events if code not in WARNING_CODES]
         if errors:
             details = "; ".join(f"{code}, {message}" for code, message in errors)
-            raise ValueError(f"{self.name} rejected the setting: {details}")
+            raise ValueError(f"{self.name} rejected {subject}: {details}")
         return events
 
     acquisition_enabled = Instrument.control(
@@ -404,3 +728,62 @@ class TektronixMSO456(SCPIMixin, Instrument):
     def reset_persistence(self) -> None:
         """Clear the accumulated persistence data, leaving ``persistence`` unchanged."""
         self.write("DISplay:PERSistence:RESET")
+
+    measurement_names = Instrument.measurement(
+        "MEASUrement:LIST?",
+        """Get the names of the measurements defined on the instrument (list of str, e.g.
+        ``["MEAS1", "MEAS2"]``), including any added from its user interface.""",
+        cast=str,
+        get_process=lambda name: [] if name == "NONE" else [name],
+    )
+
+    def add_measurement(self, number: int) -> TektronixMSO456Measurement:
+        """Add measurement ``number`` to the instrument and return its interface.
+
+        The measurement starts with a type the instrument chooses, so set its ``type``. It is
+        also available as ``measurements[number]`` and as the attribute ``meas_<number>``. Do
+        not create measurement interfaces in any other way: querying a measurement number the
+        instrument does not have creates that measurement silently.
+
+        :param number: The measurement number (int, 1 or more), shown on its badge.
+        :returns: The measurement.
+        :raises ValueError: If the number is below 1, or the instrument refuses the measurement,
+            e.g. because it exists already (event 100) or because the instrument is busy (event
+            221, seen once on the bench right after a reset).
+        """
+        if not isinstance(number, int) or number < 1:
+            raise ValueError(f"Measurement number must be an int of 1 or more, not {number!r}.")
+        self.write(f'MEASUrement:ADDNew "MEAS{number}"')
+        self._raise_on_errors(f"adding measurement {number}")
+        measurement = self.add_child(
+            TektronixMSO456Measurement, number, collection="measurements", prefix="meas_"
+        )
+        # The source accepts every analog channel of the model, which the subclasses extend.
+        measurement.source_values = [f"CH{n}" for n in self.channels]
+        return measurement
+
+    def delete_measurement(self, measurement: TektronixMSO456Measurement) -> None:
+        """Delete a measurement from the instrument and remove its interface.
+
+        The interface is only removed once the instrument confirms the deletion.
+
+        :param measurement: A measurement returned by :meth:`add_measurement`.
+        :raises ValueError: If the instrument refuses the deletion, e.g. because the measurement
+            no longer exists (event 100).
+        """
+        self.write(f'MEASUrement:DELete "MEAS{measurement.id}"')
+        self._raise_on_errors(f"deleting measurement {measurement.id}")
+        self.remove_child(measurement)
+
+    def delete_all_measurements(self) -> None:
+        """Delete every measurement from the instrument and remove every interface.
+
+        Also deletes measurements added from the instrument's user interface. The interfaces
+        are only removed once the instrument confirms the deletion.
+
+        :raises ValueError: If the instrument refuses the deletion.
+        """
+        self.write("MEASUrement:DELETEALL")
+        self._raise_on_errors("deleting every measurement")
+        for measurement in list(self.measurements.values()):
+            self.remove_child(measurement)
