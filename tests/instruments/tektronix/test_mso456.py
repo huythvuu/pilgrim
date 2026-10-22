@@ -129,6 +129,23 @@ def test_check_set_errors_returns_warnings_without_raising(caplog):
         ("stop_after", "SEQUENCE", "ACQuire:STOPAfter SEQUENCE"),
         ("sequence_count", 1, "ACQuire:SEQuence:NUMSEQuence 1"),
         ("sequence_count", 300, "ACQuire:SEQuence:NUMSEQuence 300"),
+        ("trigger_type", "EDGE", "TRIGger:A:TYPe EDGE"),
+        ("trigger_type", "TRANSITION", "TRIGger:A:TYPe TRANSITION"),
+        ("trigger_source", "CH1", "TRIGger:A:EDGE:SOUrce CH1"),
+        ("trigger_source", "CH4", "TRIGger:A:EDGE:SOUrce CH4"),
+        ("trigger_source", "LINE", "TRIGger:A:EDGE:SOUrce LINE"),
+        ("trigger_source", "AUXILIARY", "TRIGger:A:EDGE:SOUrce AUXILIARY"),
+        ("trigger_slope", "RISE", "TRIGger:A:EDGE:SLOpe RISE"),
+        ("trigger_slope", "EITHER", "TRIGger:A:EDGE:SLOpe EITHER"),
+        ("trigger_coupling", "DC", "TRIGger:A:EDGE:COUPling DC"),
+        ("trigger_coupling", "NOISEREJ", "TRIGger:A:EDGE:COUPling NOISEREJ"),
+        ("trigger_mode", "AUTO", "TRIGger:A:MODe AUTO"),
+        ("trigger_mode", "NORMAL", "TRIGger:A:MODe NORMAL"),
+        ("trigger_holdoff_type", "TIME", "TRIGger:A:HOLDoff:BY TIME"),
+        ("trigger_holdoff_type", "RANDOM", "TRIGger:A:HOLDoff:BY RANDOM"),
+        ("trigger_holdoff_time", 0, "TRIGger:A:HOLDoff:TIMe 0"),
+        ("trigger_holdoff_time", 1.2e-6, "TRIGger:A:HOLDoff:TIMe 1.2e-06"),
+        ("trigger_holdoff_time", 10, "TRIGger:A:HOLDoff:TIMe 10"),
     ],
 )
 def test_setter_writes_command_then_checks_errors(prop, value, command):
@@ -147,6 +164,18 @@ def test_setter_writes_command_then_checks_errors(prop, value, command):
         ("stop_after", "ACQuire:STOPAfter?", "SEQUENCE", "SEQUENCE"),
         ("sequence_count", "ACQuire:SEQuence:NUMSEQuence?", "1", 1),
         ("acquisition_count", "ACQuire:NUMACq?", "350", 350),
+        ("trigger_type", "TRIGger:A:TYPe?", "EDGE", "EDGE"),
+        ("trigger_type", "TRIGger:A:TYPe?", "RUNT", "RUNT"),
+        ("trigger_source", "TRIGger:A:EDGE:SOUrce?", "CH1", "CH1"),
+        ("trigger_source", "TRIGger:A:EDGE:SOUrce?", "LINE", "LINE"),
+        ("trigger_source", "TRIGger:A:EDGE:SOUrce?", "CH1_D0", "CH1_D0"),
+        ("trigger_slope", "TRIGger:A:EDGE:SLOpe?", "FALL", "FALL"),
+        ("trigger_coupling", "TRIGger:A:EDGE:COUPling?", "HFREJ", "HFREJ"),
+        ("trigger_mode", "TRIGger:A:MODe?", "NORMAL", "NORMAL"),
+        ("trigger_holdoff_type", "TRIGger:A:HOLDoff:BY?", "RANDOM", "RANDOM"),
+        ("trigger_holdoff_time", "TRIGger:A:HOLDoff:TIMe?", "1.2000E-06", 1.2e-6),
+        ("trigger_state", "TRIGger:STATE?", "READY", "READY"),
+        ("trigger_state", "TRIGger:STATE?", "SAVE", "SAVE"),
     ],
 )
 def test_getter(prop, command, reply, value):
@@ -163,6 +192,16 @@ def test_getter(prop, command, reply, value):
         ("stop_after", "SINGLE"),
         ("sequence_count", 0),
         ("sequence_count", 1.5),
+        ("trigger_type", "PULSE"),
+        ("trigger_source", "CH5"),
+        ("trigger_source", "ch1"),
+        ("trigger_source", "CH1_D0"),
+        ("trigger_slope", "POSITIVE"),
+        ("trigger_coupling", "AC"),
+        ("trigger_mode", "SINGLE"),
+        ("trigger_holdoff_type", "AUTO"),
+        ("trigger_holdoff_time", -0.1),
+        ("trigger_holdoff_time", 10.5),
     ],
 )
 def test_invalid_value_raises_without_writing(prop, value):
@@ -266,3 +305,34 @@ def test_channel_setter_raises_when_instrument_rejects_value():
         pytest.raises(ValueError, match="rejected the setting: 221, Settings conflict"),
     ):
         mso.ch1.global_display_enabled = True
+
+
+def test_mso58b_trigger_source_accepts_its_eight_channels():
+    command = "TRIGger:A:EDGE:SOUrce CH8"
+    with expected_protocol(TektronixMSO58B, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+        mso.trigger_source = "CH8"
+
+
+def test_mso58b_trigger_source_rejects_a_ninth_channel_without_writing():
+    with expected_protocol(TektronixMSO58B, CONNECT) as mso, pytest.raises(ValueError):
+        mso.trigger_source = "CH9"
+
+
+def test_trigger_setter_raises_when_instrument_rejects_value():
+    command = "TRIGger:A:EDGE:SOUrce AUXILIARY"
+    reply = '221,"Settings conflict; TRIGGER:A:EDGE:SOURCE AUXILIARY"'
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *events(reply)]) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 221, Settings conflict"),
+    ):
+        mso.trigger_source = "AUXILIARY"
+
+
+def test_force_trigger():
+    with expected_protocol(TektronixMSO456, [*CONNECT, ("TRIGger FORCe", None)]) as mso:
+        mso.force_trigger()
+
+
+def test_set_trigger_level_to_midpoint():
+    with expected_protocol(TektronixMSO456, [*CONNECT, ("TRIGger:A SETLevel", None)]) as mso:
+        mso.set_trigger_level_to_midpoint()

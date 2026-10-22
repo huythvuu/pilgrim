@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, NoReturn
 from pymeasure.adapters import Adapter
 from pymeasure.instruments import Channel, Instrument
 from pymeasure.instruments.generic_types import SCPIMixin
-from pymeasure.instruments.validators import strict_discrete_range, strict_discrete_set
+from pymeasure.instruments.validators import (
+    strict_discrete_range,
+    strict_discrete_set,
+    strict_range,
+)
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
@@ -109,6 +113,9 @@ class TektronixMSO456(SCPIMixin, Instrument):
         self.write("HEADer OFF")
         self.write("VERBose ON")
         self.clear()  # Power-up messages left in the event queue would fail the first setter.
+        # The edge trigger accepts every analog channel of the model, so the set is derived from
+        # the channels the class declared, which the subclasses extend.
+        self.trigger_source_values = [f"CH{n}" for n in self.channels] + ["LINE", "AUXILIARY"]
 
     # Every model has these four analog channels; subclasses add the rest.
     # Instantiation replaces the creator with the channel itself, which pyright cannot follow.
@@ -225,3 +232,140 @@ class TektronixMSO456(SCPIMixin, Instrument):
         measurements report no valid result and queue 540 warnings until acquisition runs again.
         """
         self.write("CLEAR")
+
+    trigger_type = Instrument.control(
+        "TRIGger:A:TYPe?",
+        "TRIGger:A:TYPe %s",
+        """Control the A trigger type (str strictly in EDGE, WIDTH, TIMEOUT, RUNT, WINDOW,
+        LOGIC, SETHOLD, TRANSITION, BUS).
+
+        Only the edge trigger is configurable through this driver: ``trigger_source``,
+        ``trigger_slope`` and ``trigger_coupling`` set it up, and each channel's
+        ``trigger_level`` sets its level.
+        """,
+        validator=strict_discrete_set,
+        values=[
+            "EDGE",
+            "WIDTH",
+            "TIMEOUT",
+            "RUNT",
+            "WINDOW",
+            "LOGIC",
+            "SETHOLD",
+            "TRANSITION",
+            "BUS",
+        ],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    trigger_source = Instrument.control(
+        "TRIGger:A:EDGE:SOUrce?",
+        "TRIGger:A:EDGE:SOUrce %s",
+        """Control the edge trigger source (str strictly in CH1 to CH<n>, LINE, AUXILIARY).
+
+        The channels are the analog channels of the model, CH1 to CH4 on every model and up to
+        CH8 on the MSO58B. LINE is the AC line voltage. AUXILIARY is the auxiliary input, which
+        only models with one accept. Digital channel sources cannot be set, but are read back.
+        """,
+        validator=strict_discrete_set,
+        values=["CH1", "CH2", "CH3", "CH4", "LINE", "AUXILIARY"],
+        check_set_errors=True,
+        cast=str,
+        dynamic=True,
+    )
+
+    trigger_slope = Instrument.control(
+        "TRIGger:A:EDGE:SLOpe?",
+        "TRIGger:A:EDGE:SLOpe %s",
+        """Control the edge trigger slope (str strictly in RISE, FALL, EITHER).""",
+        validator=strict_discrete_set,
+        values=["RISE", "FALL", "EITHER"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    trigger_coupling = Instrument.control(
+        "TRIGger:A:EDGE:COUPling?",
+        "TRIGger:A:EDGE:COUPling %s",
+        """Control the edge trigger coupling (str strictly in DC, HFREJ, LFREJ, NOISEREJ).
+
+        DC passes the whole signal to the trigger circuit. HFREJ attenuates above 50 kHz and
+        LFREJ below 80 kHz. NOISEREJ increases the trigger hysteresis, which triggers more
+        stably on a noisy signal but needs a larger amplitude.
+        """,
+        validator=strict_discrete_set,
+        values=["DC", "HFREJ", "LFREJ", "NOISEREJ"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    trigger_mode = Instrument.control(
+        "TRIGger:A:MODe?",
+        "TRIGger:A:MODe %s",
+        """Control the A trigger mode (str strictly in AUTO, NORMAL).
+
+        AUTO generates a trigger when none is detected within a time period; NORMAL waits for a
+        valid trigger event. Selecting AUTO reverts ``stop_after`` to RUNSTOP, and selecting
+        SEQUENCE there switches this to NORMAL.
+        """,
+        validator=strict_discrete_set,
+        values=["AUTO", "NORMAL"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    trigger_holdoff_type = Instrument.control(
+        "TRIGger:A:HOLDoff:BY?",
+        "TRIGger:A:HOLDoff:BY %s",
+        """Control how the A trigger holdoff is determined (str strictly in TIME, RANDOM).
+
+        TIME holds off for ``trigger_holdoff_time``; RANDOM holds off for a time the instrument
+        chooses at random.
+        """,
+        validator=strict_discrete_set,
+        values=["TIME", "RANDOM"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    trigger_holdoff_time = Instrument.control(
+        "TRIGger:A:HOLDoff:TIMe?",
+        "TRIGger:A:HOLDoff:TIMe %.12g",
+        """Control the A trigger holdoff time in seconds (float strictly from 0 to 10).
+
+        Applies while ``trigger_holdoff_type`` is TIME.
+        """,
+        validator=strict_range,
+        values=[0, 10],
+        check_set_errors=True,
+    )
+
+    trigger_state = Instrument.measurement(
+        "TRIGger:STATE?",
+        """Get the state of the trigger system (str, one of ARMED, AUTO, READY, SAVE, TRIGGER).
+
+        ARMED: acquiring pretrigger data. AUTO: in AUTO mode, acquiring without a trigger.
+        READY: pretrigger data acquired, waiting for a trigger; only now does
+        :meth:`force_trigger` work. SAVE: stopped, not acquiring. TRIGGER: triggered, acquiring
+        the post-trigger data.
+        """,
+        cast=str,
+    )
+
+    def force_trigger(self) -> None:
+        """Force a trigger event, like the front-panel Force button.
+
+        The instrument ignores it unless ``trigger_state`` is READY, so completing a single
+        sequence that waits in NORMAL mode means polling the state and forcing once it is READY.
+        """
+        self.write("TRIGger FORCe")
+
+    def set_trigger_level_to_midpoint(self) -> None:
+        """Set the A trigger level to the midpoint of the trigger source signal's range.
+
+        Equivalent to pushing the front-panel Level knob. The instrument drops set commands sent
+        within about 2 s afterwards without reporting an error, so wait with ``complete`` before
+        sending the next one.
+        """
+        self.write("TRIGger:A SETLevel")
