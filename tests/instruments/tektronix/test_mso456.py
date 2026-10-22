@@ -17,6 +17,7 @@ from pilgrim.instruments import (
 CONNECT = [("HEADer OFF", None), ("VERBose ON", None), ("*CLS", None)]
 NO_EVENT = [("*ESR?", "0"), ("ALLEv?", '0,"No events to report; queue empty"')]
 LOGGER = "pilgrim.instruments.tektronix.mso456"
+REFLEVELS = "MEASUrement:REFLevels"
 
 
 def events(reply: str, status: str = "16") -> list[tuple[str, str]]:
@@ -159,6 +160,33 @@ def test_check_set_errors_returns_warnings_without_raising(caplog):
         ("persistence_decay_time", 0.05, "DISplay:VARpersist 0.05"),
         ("persistence_decay_time", 2.5, "DISplay:VARpersist 2.5"),
         ("persistence_decay_time", 100, "DISplay:VARpersist 100"),
+        ("reference_level_method", "PERCENT", f"{REFLEVELS}:METHod PERCENT"),
+        ("reference_level_method", "ABSOLUTE", f"{REFLEVELS}:METHod ABSOLUTE"),
+        ("reference_level_mode", "LATCH", f"{REFLEVELS}:MODE LATCH"),
+        ("reference_level_mode", "CONTINUOUS", f"{REFLEVELS}:MODE CONTINUOUS"),
+        ("reference_level_scope", "GLOBAL", f"{REFLEVELS}:TYPE GLOBAL"),
+        ("reference_level_scope", "PERSOURCE", f"{REFLEVELS}:TYPE PERSOURCE"),
+        ("reference_level_percent_preset", "TENNINETY", f"{REFLEVELS}:PERCent:TYPE TENNINETY"),
+        (
+            "reference_level_percent_preset",
+            "TWENTYEIGHTY",
+            f"{REFLEVELS}:PERCent:TYPE TWENTYEIGHTY",
+        ),
+        ("reference_level_percent_preset", "CUSTOM", f"{REFLEVELS}:PERCent:TYPE CUSTOM"),
+        ("reference_level_percent_rise_high", 90, f"{REFLEVELS}:PERCent:RISEHigh 90"),
+        ("reference_level_percent_rise_mid", 50.5, f"{REFLEVELS}:PERCent:RISEMid 50.5"),
+        ("reference_level_percent_rise_low", 0, f"{REFLEVELS}:PERCent:RISELow 0"),
+        ("reference_level_percent_fall_high", 100, f"{REFLEVELS}:PERCent:FALLHigh 100"),
+        ("reference_level_percent_fall_mid", 45, f"{REFLEVELS}:PERCent:FALLMid 45"),
+        ("reference_level_percent_fall_low", 12.5, f"{REFLEVELS}:PERCent:FALLLow 12.5"),
+        ("reference_level_absolute_rise_high", 1.5, f"{REFLEVELS}:ABSolute:RISEHigh 1.5"),
+        ("reference_level_absolute_rise_mid", 0.01, f"{REFLEVELS}:ABSolute:RISEMid 0.01"),
+        ("reference_level_absolute_rise_low", -1.5, f"{REFLEVELS}:ABSolute:RISELow -1.5"),
+        ("reference_level_absolute_fall_high", 2, f"{REFLEVELS}:ABSolute:FALLHigh 2"),
+        ("reference_level_absolute_fall_mid", 0, f"{REFLEVELS}:ABSolute:FALLMid 0"),
+        ("reference_level_absolute_fall_low", -1.25e-3, f"{REFLEVELS}:ABSolute:FALLLow -0.00125"),
+        ("cycle_statistics_enabled", True, "MEASUrement:STATIstics:CYCLEMode 1"),
+        ("cycle_statistics_enabled", False, "MEASUrement:STATIstics:CYCLEMode 0"),
     ],
 )
 def test_setter_writes_command_then_checks_errors(prop, value, command):
@@ -194,6 +222,27 @@ def test_setter_writes_command_then_checks_errors(prop, value, command):
         ("persistence", "DISplay:PERSistence?", "VARPERSIST", "VARPERSIST"),
         ("persistence_decay_time", "DISplay:VARpersist?", "500.0000E-3", 0.5),
         ("persistence_decay_time", "DISplay:VARpersist?", "100.0000", 100.0),
+        ("reference_level_method", f"{REFLEVELS}:METHod?", "PERCENT", "PERCENT"),
+        ("reference_level_method", f"{REFLEVELS}:METHod?", "ABSOLUTE", "ABSOLUTE"),
+        ("reference_level_mode", f"{REFLEVELS}:MODE?", "LATCH", "LATCH"),
+        ("reference_level_scope", f"{REFLEVELS}:TYPE?", "PERSOURCE", "PERSOURCE"),
+        ("reference_level_percent_preset", f"{REFLEVELS}:PERCent:TYPE?", "CUSTOM", "CUSTOM"),
+        ("reference_level_percent_rise_high", f"{REFLEVELS}:PERCent:RISEHigh?", "80.0000", 80.0),
+        ("reference_level_percent_rise_mid", f"{REFLEVELS}:PERCent:RISEMid?", "50.0000", 50.0),
+        ("reference_level_percent_rise_low", f"{REFLEVELS}:PERCent:RISELow?", "20.0000", 20.0),
+        ("reference_level_percent_fall_high", f"{REFLEVELS}:PERCent:FALLHigh?", "90.0000", 90.0),
+        ("reference_level_percent_fall_mid", f"{REFLEVELS}:PERCent:FALLMid?", "55.5000", 55.5),
+        ("reference_level_percent_fall_low", f"{REFLEVELS}:PERCent:FALLLow?", "10.0000", 10.0),
+        ("reference_level_absolute_rise_high", f"{REFLEVELS}:ABSolute:RISEHigh?", "1.0000", 1.0),
+        ("reference_level_absolute_rise_mid", f"{REFLEVELS}:ABSolute:RISEMid?", "0.0E+0", 0.0),
+        ("reference_level_absolute_rise_low", f"{REFLEVELS}:ABSolute:RISELow?", "-1.0000", -1.0),
+        ("reference_level_absolute_fall_high", f"{REFLEVELS}:ABSolute:FALLHigh?", "1.5000", 1.5),
+        ("reference_level_absolute_fall_mid", f"{REFLEVELS}:ABSolute:FALLMid?", "30.0E-3", 0.03),
+        ("reference_level_absolute_fall_low", f"{REFLEVELS}:ABSolute:FALLLow?", "-1.5000", -1.5),
+        ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "0", False),
+        ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "1", True),
+        ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "OFF", False),
+        ("cycle_statistics_enabled", "MEASUrement:STATIstics:CYCLEMode?", "ON", True),
     ],
 )
 def test_getter(prop, command, reply, value):
@@ -225,6 +274,17 @@ def test_getter(prop, command, reply, value):
         ("persistence", "INFP"),
         ("persistence_decay_time", 0.04),
         ("persistence_decay_time", 100.5),
+        ("reference_level_method", "PERC"),
+        ("reference_level_method", "percent"),
+        ("reference_level_mode", "AUTO"),
+        ("reference_level_scope", "LOCAL"),
+        ("reference_level_percent_preset", "TENNINE"),
+        ("reference_level_percent_rise_high", -0.1),
+        ("reference_level_percent_rise_high", 100.1),
+        ("reference_level_percent_fall_low", -1),
+        ("reference_level_percent_fall_mid", 101),
+        ("cycle_statistics_enabled", "ON"),
+        ("cycle_statistics_enabled", 2),
     ],
 )
 def test_invalid_value_raises_without_writing(prop, value):

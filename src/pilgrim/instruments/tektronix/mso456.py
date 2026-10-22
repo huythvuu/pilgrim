@@ -10,6 +10,7 @@ from urllib.parse import quote, unquote
 
 from pymeasure.adapters import Adapter
 from pymeasure.instruments import Channel, Instrument
+from pymeasure.instruments.common_base import DynamicProperty
 from pymeasure.instruments.generic_types import SCPIMixin
 from pymeasure.instruments.validators import (
     strict_discrete_range,
@@ -66,6 +67,59 @@ def _measurement_source(value: str, values: Sequence[str]) -> str:
     if value in values or (isinstance(value, str) and _WAVEFORM_SOURCE.fullmatch(value)):
         return value
     raise ValueError(f"Value of {value} is not in {list(values)} or of the form MATH<n> or REF<n>")
+
+
+# The global reference levels are set per edge and level, with the edge keyword followed by the
+# level keyword, e.g. RISEHigh.
+_EDGES = {"RISE": "rising", "FALL": "falling"}
+_LEVELS = {"High": "high", "Low": "low", "Mid": "mid"}
+
+
+def _percent_reference_level(edge: str, level: str) -> property | DynamicProperty:
+    """Create the control for one global reference level given as a percentage.
+
+    :param edge: ``RISE`` or ``FALL``, the edge the level applies to.
+    :param level: ``High``, ``Low`` or ``Mid``, which of the levels of that edge it is.
+    :returns: The property.
+    """
+    command = f"MEASUrement:REFLevels:PERCent:{edge}{level}"
+    return Instrument.control(
+        f"{command}?",
+        f"{command} %.12g",
+        f"""Control the {_LEVELS[level]} reference level of the {_EDGES[edge]} edge as a
+        percentage of the waveform amplitude, from the base to the top (float strictly from 0 to
+        100).
+
+        Applies while ``reference_level_method`` is PERCENT. ``reference_level_percent_preset``
+        sets all six percentages at once; select CUSTOM there to set them individually. The
+        instrument clamps a value it does not accept silently, without reporting an error, so
+        read the property back to learn the percentage that applies.
+        """,
+        validator=strict_range,
+        values=[0, 100],
+        check_set_errors=True,
+    )
+
+
+def _absolute_reference_level(edge: str, level: str) -> property | DynamicProperty:
+    """Create the control for one global reference level given as an absolute value.
+
+    :param edge: ``RISE`` or ``FALL``, the edge the level applies to.
+    :param level: ``High``, ``Low`` or ``Mid``, which of the levels of that edge it is.
+    :returns: The property.
+    """
+    command = f"MEASUrement:REFLevels:ABSolute:{edge}{level}"
+    return Instrument.control(
+        f"{command}?",
+        f"{command} %.12g",
+        f"""Control the {_LEVELS[level]} reference level of the {_EDGES[edge]} edge in volts
+        (float).
+
+        Applies while ``reference_level_method`` is ABSOLUTE. The value is in the vertical units
+        of the measurement source, volts for an analog channel.
+        """,
+        check_set_errors=True,
+    )
 
 
 class TektronixMSO456Channel(Channel):
@@ -787,3 +841,99 @@ class TektronixMSO456(SCPIMixin, Instrument):
         self._raise_on_errors("deleting every measurement")
         for measurement in list(self.measurements.values()):
             self.remove_child(measurement)
+
+    reference_level_method = Instrument.control(
+        "MEASUrement:REFLevels:METHod?",
+        "MEASUrement:REFLevels:METHod %s",
+        """Control how the global reference levels are given (str strictly in PERCENT,
+        ABSOLUTE).
+
+        The reference levels mark where the edge measurements are taken: rise and fall time are
+        measured between the low and high levels, while period, frequency and pulse width use
+        the mid level. PERCENT takes the levels from the six ``reference_level_percent_*``
+        properties, relative to the base and top of the waveform, so they follow its amplitude;
+        ABSOLUTE takes them from the six ``reference_level_absolute_*`` properties in volts. The
+        global levels apply to every measurement that uses them rather than its own, a
+        per-measurement choice this driver does not configure.
+        """,
+        validator=strict_discrete_set,
+        values=["PERCENT", "ABSOLUTE"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    reference_level_mode = Instrument.control(
+        "MEASUrement:REFLevels:MODE?",
+        "MEASUrement:REFLevels:MODE %s",
+        """Control how often the global reference levels are calculated from the waveform (str
+        strictly in LATCH, CONTINUOUS).
+
+        LATCH calculates them on the first acquisition after a statistics reset only, so they
+        stay fixed while the statistics accumulate; CONTINUOUS recalculates them on every
+        acquisition.
+        """,
+        validator=strict_discrete_set,
+        values=["LATCH", "CONTINUOUS"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    reference_level_scope = Instrument.control(
+        "MEASUrement:REFLevels:TYPE?",
+        "MEASUrement:REFLevels:TYPE %s",
+        """Control whether the global reference levels are shared by every source or set per
+        source (str strictly in GLOBAL, PERSOURCE).
+
+        GLOBAL applies the levels set through this driver to the measurements on every source.
+        PERSOURCE gives each source its own levels, which this driver does not configure.
+        """,
+        validator=strict_discrete_set,
+        values=["GLOBAL", "PERSOURCE"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    reference_level_percent_preset = Instrument.control(
+        "MEASUrement:REFLevels:PERCent:TYPE?",
+        "MEASUrement:REFLevels:PERCent:TYPE %s",
+        """Control the preset for the global reference levels given as percentages (str strictly
+        in TENNINETY, TWENTYEIGHTY, CUSTOM).
+
+        TENNINETY sets the low, mid and high levels of both edges to 10, 50 and 90 percent,
+        TWENTYEIGHTY to 20, 50 and 80 percent. CUSTOM allows the six
+        ``reference_level_percent_*`` properties to be set to other values. Applies while
+        ``reference_level_method`` is PERCENT.
+        """,
+        validator=strict_discrete_set,
+        values=["TENNINETY", "TWENTYEIGHTY", "CUSTOM"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    reference_level_percent_rise_high = _percent_reference_level("RISE", "High")
+    reference_level_percent_rise_mid = _percent_reference_level("RISE", "Mid")
+    reference_level_percent_rise_low = _percent_reference_level("RISE", "Low")
+    reference_level_percent_fall_high = _percent_reference_level("FALL", "High")
+    reference_level_percent_fall_mid = _percent_reference_level("FALL", "Mid")
+    reference_level_percent_fall_low = _percent_reference_level("FALL", "Low")
+    reference_level_absolute_rise_high = _absolute_reference_level("RISE", "High")
+    reference_level_absolute_rise_mid = _absolute_reference_level("RISE", "Mid")
+    reference_level_absolute_rise_low = _absolute_reference_level("RISE", "Low")
+    reference_level_absolute_fall_high = _absolute_reference_level("FALL", "High")
+    reference_level_absolute_fall_mid = _absolute_reference_level("FALL", "Mid")
+    reference_level_absolute_fall_low = _absolute_reference_level("FALL", "Low")
+
+    cycle_statistics_enabled = Instrument.control(
+        "MEASUrement:STATIstics:CYCLEMode?",
+        "MEASUrement:STATIstics:CYCLEMode %d",
+        """Control whether cycle-to-cycle statistics are tracked for every measurement (bool).
+
+        Enabling adds the cycle-to-cycle columns to the results table. It affects the values
+        acquired and measured after it is enabled, not the statistics accumulated before.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
