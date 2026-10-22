@@ -55,6 +55,20 @@ def _strip_quotes(reply: str) -> str:
     return reply.removeprefix('"').removesuffix('"')
 
 
+# A results table is named TABLE<n>: the instrument refuses any other name (event 151) and
+# TABLE0 (event 131).
+_TABLE_NAME = re.compile(r"TABLE[1-9]\d*")
+
+
+def _validate_table_name(name: str) -> None:
+    """Raise ``ValueError`` unless ``name`` is a results table name, ``TABLE<n>`` with n >= 1.
+
+    :param name: The name to validate.
+    """
+    if not isinstance(name, str) or not _TABLE_NAME.fullmatch(name):
+        raise ValueError(f"Results table name must be TABLE<n> with n of 1 or more, not {name!r}.")
+
+
 def _measurement_source(value: str, values: Sequence[str]) -> str:
     """Validate a measurement source: an analog channel in ``values`` or any MATH<n> or REF<n>.
 
@@ -841,6 +855,32 @@ class TektronixMSO456(SCPIMixin, Instrument):
         self._raise_on_errors("deleting every measurement")
         for measurement in list(self.measurements.values()):
             self.remove_child(measurement)
+
+    def add_results_table(self, name: str) -> None:
+        """Add a measurement results table to the display.
+
+        The table lists every measurement defined on the instrument with its statistics,
+        including those added later, so nothing assigns measurements to it. The instrument
+        provides no query for the tables it has, so keep track of the names added.
+
+        :param name: The table name, ``TABLE<n>`` with n of 1 or more, e.g. ``"TABLE1"``.
+        :raises ValueError: If the name has another form, or the instrument refuses the table,
+            e.g. because it exists already (event 100).
+        """
+        _validate_table_name(name)
+        self.write(f'MEASTABle:ADDNew "{name}"')
+        self._raise_on_errors(f"adding results table {name}")
+
+    def delete_results_table(self, name: str) -> None:
+        """Delete a measurement results table from the display, keeping the measurements.
+
+        :param name: The table name, ``TABLE<n>`` with n of 1 or more, e.g. ``"TABLE1"``.
+        :raises ValueError: If the name has another form, or the instrument refuses the
+            deletion, e.g. because the table does not exist (event 100).
+        """
+        _validate_table_name(name)
+        self.write(f'MEASTABle:DELETE "{name}"')
+        self._raise_on_errors(f"deleting results table {name}")
 
     reference_level_method = Instrument.control(
         "MEASUrement:REFLevels:METHod?",

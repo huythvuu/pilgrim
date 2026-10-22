@@ -574,6 +574,62 @@ def test_measurement_names(reply, names):
         assert mso.measurement_names == names
 
 
+@pytest.mark.parametrize("name", ["TABLE1", "TABLE12"])
+def test_add_results_table_sends_command_then_checks_errors(name):
+    protocol = [*CONNECT, (f'MEASTABle:ADDNew "{name}"', None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.add_results_table(name)
+
+
+@pytest.mark.parametrize("name", ["TABLE1", "TABLE12"])
+def test_delete_results_table_sends_command_then_checks_errors(name):
+    protocol = [*CONNECT, (f'MEASTABle:DELETE "{name}"', None), *NO_EVENT]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.delete_results_table(name)
+
+
+INVALID_TABLE_NAMES = ["TABLE0", "TABLE", "TABLE1.5", "table1", "MEAS1", "FOO", "", 1, None]
+
+
+@pytest.mark.parametrize("name", INVALID_TABLE_NAMES)
+def test_add_results_table_rejects_invalid_name_without_writing(name):
+    with (
+        expected_protocol(TektronixMSO456, CONNECT) as mso,
+        pytest.raises(ValueError, match="must be TABLE<n>"),
+    ):
+        mso.add_results_table(name)
+
+
+@pytest.mark.parametrize("name", INVALID_TABLE_NAMES)
+def test_delete_results_table_rejects_invalid_name_without_writing(name):
+    with (
+        expected_protocol(TektronixMSO456, CONNECT) as mso,
+        pytest.raises(ValueError, match="must be TABLE<n>"),
+    ):
+        mso.delete_results_table(name)
+
+
+def test_add_results_table_raises_when_instrument_refuses():
+    reply = '100,"Command error; MEASTABLE:ADDNEW ""TABLE1"""'
+    protocol = [*CONNECT, ('MEASTABle:ADDNew "TABLE1"', None), *events(reply)]
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(ValueError, match="rejected adding results table TABLE1: 100, Command error"),
+    ):
+        mso.add_results_table("TABLE1")
+
+
+def test_delete_results_table_raises_when_instrument_refuses():
+    reply = '100,"Command error; MEASTABLE:DELETE ""TABLE1"""'
+    protocol = [*CONNECT, ('MEASTABle:DELETE "TABLE1"', None), *events(reply)]
+    expected = "rejected deleting results table TABLE1: 100, Command error"
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(ValueError, match=expected),
+    ):
+        mso.delete_results_table("TABLE1")
+
+
 @pytest.mark.parametrize(
     ("prop", "value", "command"),
     [
