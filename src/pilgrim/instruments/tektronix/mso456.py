@@ -658,6 +658,50 @@ class TektronixMSO456(SCPIMixin, Instrument):
         """
         self.write("CLEAR")
 
+    horizontal_mode = Instrument.control(
+        "HORizontal:MODe?",
+        "HORizontal:MODe %s",
+        """Control the horizontal operating mode (str strictly in AUTO, MANUAL).
+
+        AUTO adjusts the sample rate and record length to suit ``horizontal_scale``, so the
+        scale is the only horizontal setting to make. MANUAL lets the sample rate and record
+        length be set as well; they interact with the scale, and this driver does not configure
+        them.
+        """,
+        validator=strict_discrete_set,
+        values=["AUTO", "MANUAL"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    horizontal_scale = Instrument.control(
+        "HORizontal:SCAle?",
+        "HORizontal:SCAle %.12g",
+        """Control the horizontal scale in seconds per division (float).
+
+        The screen is 10 divisions wide, so the scale that fits ``n`` cycles of a signal of
+        frequency ``f`` is ``n / (10 * f)``. The instrument rounds the value to one of its
+        supported settings without reporting an error, so read the property back to learn the
+        scale that applies. The manual gives no range; the limits depend on the model.
+        """,
+        check_set_errors=True,
+    )
+
+    horizontal_position = Instrument.control(
+        "HORizontal:POSition?",
+        "HORizontal:POSition %.12g",
+        """Control the horizontal position of the trigger point as a percentage of the screen
+        width (float strictly from 0 to 100).
+
+        0 puts the trigger point at the left edge, 100 at the right edge, and 50 in the center.
+        With horizontal delay mode on, which this driver does not configure, the instrument
+        forces the position to 50.
+        """,
+        validator=strict_range,
+        values=[0, 100],
+        check_set_errors=True,
+    )
+
     trigger_type = Instrument.control(
         "TRIGger:A:TYPe?",
         "TRIGger:A:TYPe %s",

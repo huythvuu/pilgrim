@@ -4,8 +4,8 @@ Run with ``--device-address=<VISA resource name>`` of any 4, 5 or 6 Series MSO.
 An MSO58 is driven through :class:`TektronixMSO58`, every other model through the base class.
 The tests use values valid on every model and drive CH1 only, which should carry a repetitive
 signal with edges, such as the 1 kHz pulse on the bench; the tests that need a trigger skip when
-the edge trigger at the midpoint of CH1 does not fire. The vertical and horizontal settings are
-never changed.
+the edge trigger at the midpoint of CH1 does not fire. The vertical settings are never changed;
+the horizontal settings are changed and set back after each test.
 The setup is saved to a file in ``C:/pilgrim_test`` first and recalled when the module finishes,
 which restores the measurements and the results table the tests delete and add; the file and the
 directory are deleted again. The response header and verbosity states every connection sets are
@@ -52,6 +52,17 @@ POPULATION_LIMIT = 5
 FEW_VALUES = 3
 # Enough acquisitions to tell a reset count from one that carried on.
 MANY_ACQUISITIONS = 50
+# The screen is 10 divisions wide, so a scale of ``cycles / (DIVISIONS * frequency)`` fits that
+# many cycles on it.
+DIVISIONS = 10
+CYCLES_ON_SCREEN = 5
+# A horizontal scale between two of the instrument's steps, which it rounds silently to one
+# of them.
+OFF_STEP_SCALE = 3.3e-6
+STEP_BELOW, STEP_ABOVE = 2e-6, 5e-6
+# Horizontal scales far outside the range of every model, which the instrument clamps.
+HUGE_SCALE = 1e6
+TINY_SCALE = 1e-15
 # The measurement types the transient procedure needs.
 TRANSIENT_TYPES = ["MEAN", "MINIMUM", "MAXIMUM", "TOP", "BASE", "PK2PK", "RISETIME", "FALLTIME"]
 PERCENT_LEVELS = [
@@ -70,6 +81,10 @@ ROUND_TRIPS: list[tuple[str, list[str | float | bool]]] = [
     ("trigger_mode", ["NORMAL", "AUTO"]),
     ("trigger_holdoff_type", ["TIME", "RANDOM"]),
     ("trigger_holdoff_time", [0.0, 5e-9, 1.23456e-3, 10.0]),
+    ("horizontal_mode", ["MANUAL", "AUTO"]),
+    # Decade steps, which every model supports (the manual's examples use 20 ns and 20 µs).
+    ("horizontal_scale", [20e-9, 2e-6, 1e-3, 1.0]),
+    ("horizontal_position", [0.0, 10.0, 100.0, 50.0]),
     ("persistence", ["AUTO", "INFPERSIST", "VARPERSIST", "OFF"]),
     ("persistence_decay_time", [0.05, 2.5, 100.0]),
     ("reference_level_method", ["ABSOLUTE", "PERCENT"]),
@@ -502,6 +517,42 @@ def test_trigger_source_auxiliary_depends_on_the_model(mso, keep):
 
 def test_trigger_state_is_a_documented_state(mso):
     assert mso.trigger_state in TRIGGER_STATES
+
+
+def test_horizontal_scale_rounds_off_step_value_silently(mso, keep):
+    keep(mso, "horizontal_scale")
+    mso.horizontal_scale = OFF_STEP_SCALE
+    applied = mso.horizontal_scale
+    # Which of the two steps applies is for the bench to tell.
+    assert STEP_BELOW <= applied <= STEP_ABOVE
+    assert mso.check_errors() == []
+
+
+def test_horizontal_scale_clamps_to_the_limits_silently(mso, keep):
+    keep(mso, "horizontal_scale")
+    mso.horizontal_scale = HUGE_SCALE
+    slowest = mso.horizontal_scale
+    mso.horizontal_scale = TINY_SCALE
+    fastest = mso.horizontal_scale
+    assert TINY_SCALE < fastest < slowest < HUGE_SCALE
+    assert mso.check_errors() == []
+
+
+def test_horizontal_scale_fits_the_cycles_on_screen(mso, keep, measurement, triggering_signal):
+    keep(mso, "horizontal_scale")
+    measurement.type = "FREQUENCY"
+    assert wait_until(lambda: measurement.population >= FEW_VALUES)
+    frequency = measurement.mean
+    mso.horizontal_scale = CYCLES_ON_SCREEN / (DIVISIONS * frequency)
+    # The instrument rounds the scale, so the expectation follows the scale that applies.
+    expected = DIVISIONS * mso.horizontal_scale * frequency
+    mso.clear_acquisitions()
+    assert mso.complete == "1"
+    assert wait_until(lambda: measurement.current_population >= 1)
+    # A per-cycle type counts the whole cycles in the record, one fewer when the edges fall
+    # just inside the screen.
+    assert abs(measurement.current_population - expected) <= 1
+    assert mso.check_errors() == []
 
 
 @pytest.mark.parametrize(("value", "applied"), [(1.26, 1.25), (0.074, 0.05), (99.98, 100.0)])
