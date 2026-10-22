@@ -596,11 +596,11 @@ class TektronixMSO456(SCPIMixin, Instrument):
         "ACQuire:STATE %d",
         """Control whether the instrument is acquiring (bool).
 
-        Enabling starts a new acquisition and resets ``acquisition_count``: a single sequence if
-        ``stop_after`` is SEQUENCE, otherwise a continuous one. It does not reset the
-        all-acquisitions measurement statistics; :meth:`clear_acquisitions` does. A single
-        sequence finishes only once its acquisitions have been triggered, so waiting for it with
-        ``complete`` blocks until then.
+        Enabling starts a new acquisition: a single sequence if ``stop_after`` is SEQUENCE,
+        which restarts ``acquisition_count``, otherwise a continuous one, which carries the
+        count on. It does not reset the all-acquisitions measurement statistics;
+        :meth:`clear_acquisitions` does. A single sequence finishes only once its acquisitions
+        have been triggered, so waiting for it with ``complete`` blocks until then.
         """,
         validator=strict_discrete_set,
         map_values=True,
@@ -640,7 +640,12 @@ class TektronixMSO456(SCPIMixin, Instrument):
 
     acquisition_count = Instrument.measurement(
         "ACQuire:NUMACq?",
-        """Get the number of acquisitions since acquisition was last enabled (int).""",
+        """Get the number of acquisitions since the count was last reset (int).
+
+        A single sequence restarts the count, so it equals ``sequence_count`` once the sequence
+        has finished. :meth:`clear_acquisitions` resets it a moment after it completes. Enabling
+        acquisition in RUNSTOP mode carries the count on, although the manual says it restarts.
+        """,
         cast=int,
     )
 
