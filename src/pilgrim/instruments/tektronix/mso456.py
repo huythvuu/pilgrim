@@ -369,3 +369,38 @@ class TektronixMSO456(SCPIMixin, Instrument):
         sending the next one.
         """
         self.write("TRIGger:A SETLevel")
+
+    persistence = Instrument.control(
+        "DISplay:PERSistence?",
+        "DISplay:PERSistence %s",
+        """Control the display persistence (str strictly in OFF, AUTO, INFPERSIST, VARPERSIST).
+
+        OFF shows only the latest acquisition. INFPERSIST accumulates every acquired waveform
+        point until :meth:`reset_persistence`, which keeps rare transients visible. VARPERSIST
+        lets the points fade over ``persistence_decay_time``, and AUTO lets the instrument
+        choose the decay time.
+        """,
+        validator=strict_discrete_set,
+        values=["OFF", "AUTO", "INFPERSIST", "VARPERSIST"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    # The manual's lower limit of 0.5 s is wrong: the instrument accepts down to 0.05 s (bench).
+    persistence_decay_time = Instrument.control(
+        "DISplay:VARpersist?",
+        "DISplay:VARpersist %.12g",
+        """Control the persistence decay time in seconds (float strictly from 0.05 to 100).
+
+        The approximate time a freshly acquired waveform point takes to fade while
+        ``persistence`` is VARPERSIST. The instrument rounds the value to the nearest 0.05 s
+        without reporting an error, so read the property back to learn the time that applies.
+        """,
+        validator=strict_range,
+        values=[0.05, 100],
+        check_set_errors=True,
+    )
+
+    def reset_persistence(self) -> None:
+        """Clear the accumulated persistence data, leaving ``persistence`` unchanged."""
+        self.write("DISplay:PERSistence:RESET")

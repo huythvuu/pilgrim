@@ -146,6 +146,13 @@ def test_check_set_errors_returns_warnings_without_raising(caplog):
         ("trigger_holdoff_time", 0, "TRIGger:A:HOLDoff:TIMe 0"),
         ("trigger_holdoff_time", 1.2e-6, "TRIGger:A:HOLDoff:TIMe 1.2e-06"),
         ("trigger_holdoff_time", 10, "TRIGger:A:HOLDoff:TIMe 10"),
+        ("persistence", "OFF", "DISplay:PERSistence OFF"),
+        ("persistence", "AUTO", "DISplay:PERSistence AUTO"),
+        ("persistence", "INFPERSIST", "DISplay:PERSistence INFPERSIST"),
+        ("persistence", "VARPERSIST", "DISplay:PERSistence VARPERSIST"),
+        ("persistence_decay_time", 0.05, "DISplay:VARpersist 0.05"),
+        ("persistence_decay_time", 2.5, "DISplay:VARpersist 2.5"),
+        ("persistence_decay_time", 100, "DISplay:VARpersist 100"),
     ],
 )
 def test_setter_writes_command_then_checks_errors(prop, value, command):
@@ -176,6 +183,11 @@ def test_setter_writes_command_then_checks_errors(prop, value, command):
         ("trigger_holdoff_time", "TRIGger:A:HOLDoff:TIMe?", "1.2000E-06", 1.2e-6),
         ("trigger_state", "TRIGger:STATE?", "READY", "READY"),
         ("trigger_state", "TRIGger:STATE?", "SAVE", "SAVE"),
+        ("persistence", "DISplay:PERSistence?", "OFF", "OFF"),
+        ("persistence", "DISplay:PERSistence?", "INFPERSIST", "INFPERSIST"),
+        ("persistence", "DISplay:PERSistence?", "VARPERSIST", "VARPERSIST"),
+        ("persistence_decay_time", "DISplay:VARpersist?", "500.0000E-3", 0.5),
+        ("persistence_decay_time", "DISplay:VARpersist?", "100.0000", 100.0),
     ],
 )
 def test_getter(prop, command, reply, value):
@@ -202,6 +214,11 @@ def test_getter(prop, command, reply, value):
         ("trigger_holdoff_type", "AUTO"),
         ("trigger_holdoff_time", -0.1),
         ("trigger_holdoff_time", 10.5),
+        ("persistence", "ON"),
+        ("persistence", True),
+        ("persistence", "INFP"),
+        ("persistence_decay_time", 0.04),
+        ("persistence_decay_time", 100.5),
     ],
 )
 def test_invalid_value_raises_without_writing(prop, value):
@@ -336,3 +353,8 @@ def test_force_trigger():
 def test_set_trigger_level_to_midpoint():
     with expected_protocol(TektronixMSO456, [*CONNECT, ("TRIGger:A SETLevel", None)]) as mso:
         mso.set_trigger_level_to_midpoint()
+
+
+def test_reset_persistence():
+    with expected_protocol(TektronixMSO456, [*CONNECT, ("DISplay:PERSistence:RESET", None)]) as mso:
+        mso.reset_persistence()
