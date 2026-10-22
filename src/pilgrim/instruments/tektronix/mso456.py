@@ -302,7 +302,7 @@ class TektronixMSO456Measurement(Channel):
         MATH<n>, REF<n>).
 
         The analog channels are those of the model, CH1 to CH4 on every model and up to CH8 on
-        the MSO58B. A math or reference waveform must exist on the instrument, which this driver
+        the MSO58. A math or reference waveform must exist on the instrument, which this driver
         cannot check, so the instrument rejects a missing one.
         """,
         validator=_measurement_source,
@@ -685,7 +685,7 @@ class TektronixMSO456(SCPIMixin, Instrument):
         """Control the edge trigger source (str strictly in CH1 to CH<n>, LINE, AUXILIARY).
 
         The channels are the analog channels of the model, CH1 to CH4 on every model and up to
-        CH8 on the MSO58B. LINE is the AC line voltage. AUXILIARY is the auxiliary input, which
+        CH8 on the MSO58. LINE is the AC line voltage. AUXILIARY is the auxiliary input, which
         only models with one accept. Digital channel sources cannot be set, but are read back.
         """,
         validator=strict_discrete_set,

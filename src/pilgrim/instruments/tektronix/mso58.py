@@ -1,4 +1,4 @@
-"""Driver for the Tektronix MSO58B mixed signal oscilloscope."""
+"""Driver for the Tektronix MSO58 mixed signal oscilloscope."""
 
 from typing import TYPE_CHECKING
 
@@ -8,14 +8,14 @@ from pymeasure.instruments import Instrument
 from .mso456 import TektronixMSO456, TektronixMSO456Channel
 
 
-class TektronixMSO58B(TektronixMSO456):
-    """Represent the Tektronix MSO58B mixed signal oscilloscope with eight analog channels.
+class TektronixMSO58(TektronixMSO456):
+    """Represent the Tektronix MSO58 mixed signal oscilloscope with eight analog channels.
 
     Takes the same parameters as :class:`TektronixMSO456`, with ``name`` defaulting to
-    "Tektronix MSO58B".
+    "Tektronix MSO58".
     """
 
-    def __init__(self, adapter: Adapter | str, name: str = "Tektronix MSO58B", **kwargs) -> None:
+    def __init__(self, adapter: Adapter | str, name: str = "Tektronix MSO58", **kwargs) -> None:
         super().__init__(adapter, name, **kwargs)
 
     # Instantiation replaces the creator with the channel itself, which pyright cannot follow.

@@ -12,7 +12,7 @@ from pyvisa import VisaIOError
 from pyvisa.constants import StatusCode
 
 from pilgrim.instruments import (
-    TektronixMSO58B,
+    TektronixMSO58,
     TektronixMSO456,
     TektronixMSO456Channel,
     TektronixMSO456Measurement,
@@ -39,9 +39,9 @@ def test_init_configures_replies_and_clears_event_queue():
         assert mso.name == "Tektronix MSO456"
 
 
-def test_mso58b_init():
-    with expected_protocol(TektronixMSO58B, CONNECT) as mso:
-        assert mso.name == "Tektronix MSO58B"
+def test_mso58_init():
+    with expected_protocol(TektronixMSO58, CONNECT) as mso:
+        assert mso.name == "Tektronix MSO58"
         assert isinstance(mso, TektronixMSO456)
 
 
@@ -342,8 +342,8 @@ def test_base_class_has_four_analog_channels():
         assert not hasattr(mso, "ch5")
 
 
-def test_mso58b_has_eight_analog_channels():
-    with expected_protocol(TektronixMSO58B, CONNECT) as mso:
+def test_mso58_has_eight_analog_channels():
+    with expected_protocol(TektronixMSO58, CONNECT) as mso:
         assert list(mso.channels) == [1, 2, 3, 4, 5, 6, 7, 8]
         assert isinstance(mso.ch8, TektronixMSO456Channel)
         assert mso.ch8 is mso.channels[8]
@@ -366,9 +366,9 @@ def test_channel_setter_writes_command_then_checks_errors(channel, prop, value, 
         setattr(getattr(mso, channel), prop, value)
 
 
-def test_mso58b_channel_setter_substitutes_its_number():
+def test_mso58_channel_setter_substitutes_its_number():
     command = "DISplay:WAVEView1:CH8:STATE 1"
-    with expected_protocol(TektronixMSO58B, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+    with expected_protocol(TektronixMSO58, [*CONNECT, (command, None), *NO_EVENT]) as mso:
         mso.ch8.display_enabled = True
 
 
@@ -417,14 +417,14 @@ def test_channel_setter_raises_when_instrument_rejects_value():
         mso.ch1.global_display_enabled = True
 
 
-def test_mso58b_trigger_source_accepts_its_eight_channels():
+def test_mso58_trigger_source_accepts_its_eight_channels():
     command = "TRIGger:A:EDGE:SOUrce CH8"
-    with expected_protocol(TektronixMSO58B, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+    with expected_protocol(TektronixMSO58, [*CONNECT, (command, None), *NO_EVENT]) as mso:
         mso.trigger_source = "CH8"
 
 
-def test_mso58b_trigger_source_rejects_a_ninth_channel_without_writing():
-    with expected_protocol(TektronixMSO58B, CONNECT) as mso, pytest.raises(ValueError):
+def test_mso58_trigger_source_rejects_a_ninth_channel_without_writing():
+    with expected_protocol(TektronixMSO58, CONNECT) as mso, pytest.raises(ValueError):
         mso.trigger_source = "CH9"
 
 
@@ -804,15 +804,15 @@ def test_measurement_setter_raises_when_instrument_rejects_value():
         mso.add_measurement(1).source = "REF1"
 
 
-def test_mso58b_measurement_source_accepts_its_eight_channels():
+def test_mso58_measurement_source_accepts_its_eight_channels():
     protocol = [*CONNECT, *ADD_MEAS1, ("MEASUrement:MEAS1:SOURCE CH8", None), *NO_EVENT]
-    with expected_protocol(TektronixMSO58B, protocol) as mso:
+    with expected_protocol(TektronixMSO58, protocol) as mso:
         mso.add_measurement(1).source = "CH8"
 
 
-def test_mso58b_measurement_source_rejects_a_ninth_channel_without_writing():
+def test_mso58_measurement_source_rejects_a_ninth_channel_without_writing():
     with (
-        expected_protocol(TektronixMSO58B, [*CONNECT, *ADD_MEAS1]) as mso,
+        expected_protocol(TektronixMSO58, [*CONNECT, *ADD_MEAS1]) as mso,
         pytest.raises(ValueError),
     ):
         mso.add_measurement(1).source = "CH9"
