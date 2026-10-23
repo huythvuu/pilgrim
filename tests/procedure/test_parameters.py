@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 from pymeasure.units import ureg
 
-from pilgrim.procedure.parameters import FloatListParameter, FloatRangeListParameter
+from pilgrim.procedure.parameters import (
+    FloatListParameter,
+    FloatRangeListParameter,
+    StringParameter,
+)
 
 DECADES = [100.0, 1e3, 1e4, 1e5, 1e6]
 
@@ -165,3 +169,23 @@ def test_float_range_list_round_trips_with_units() -> None:
 def test_float_range_list_rejects_invalid(windows: FloatRangeListParameter, value: object) -> None:
     with pytest.raises(ValueError, match="Windows"):
         windows.value = value
+
+
+@pytest.mark.parametrize("value", ["USB0::0x0699::0x0522::C065123::INSTR", "", " spaced out "])
+def test_string_keeps_value_unchanged(value: str) -> None:
+    resource = StringParameter("Resource")
+    resource.value = value
+    assert resource.value == value
+    assert resource.is_set()
+
+
+def test_string_round_trips_through_string() -> None:
+    resource = StringParameter("Resource", default="GPIB0::1::INSTR")
+    assert resource.convert(str(resource)) == "GPIB0::1::INSTR"
+
+
+@pytest.mark.parametrize("value", [1, 1.5, True, None, ["a"], b"bytes"])
+def test_string_rejects_non_strings(value: object) -> None:
+    resource = StringParameter("Resource")
+    with pytest.raises(ValueError, match="Resource must be a string"):
+        resource.value = value

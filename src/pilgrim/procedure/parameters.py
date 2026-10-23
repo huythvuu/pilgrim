@@ -41,6 +41,28 @@ class BooleanParameter(_TypedParameter[bool], experiment.BooleanParameter):
     """Boolean procedure parameter that reads as ``bool`` on a procedure instance."""
 
 
+class StringParameter(_TypedParameter[str], experiment.Parameter):
+    """String procedure parameter that reads as ``str`` on a procedure instance.
+
+    Only strings are accepted, including the empty string, so a number is rejected rather than
+    converted; the GUI shows it as a text input.
+
+    :param name: The parameter name
+    :param kwargs: Passed on to :class:`pymeasure.experiment.Parameter`, such as ``default``
+    """
+
+    def convert(self, value: Any) -> str:
+        """Return the value unchanged if it is a string.
+
+        :param value: The string.
+        :returns: The same string.
+        :raises ValueError: If the value is not a string.
+        """
+        if not isinstance(value, str):
+            raise ValueError(f"{self.name} must be a string, not {type(value).__name__}.")
+        return value
+
+
 class _BoundedListParameter(experiment.VectorParameter):
     # Unit conversion and bounds shared by the list parameters below; convert() is theirs.
 
