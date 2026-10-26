@@ -4,8 +4,8 @@ Run with ``--device-address=<VISA resource name>`` of any 4, 5 or 6 Series MSO.
 An MSO58 is driven through :class:`TektronixMSO58`, every other model through the base class.
 The tests use values valid on every model and drive CH1 only, which should carry a repetitive
 signal with edges, such as the 1 kHz pulse on the bench; the tests that need a trigger skip when
-the edge trigger at the midpoint of CH1 does not fire. The vertical settings are never changed;
-the horizontal settings are changed and set back after each test.
+the edge trigger at the midpoint of CH1 does not fire. The vertical settings are never changed,
+except the bandwidth limit of CH1; it and the horizontal settings are set back after each test.
 The setup is saved to a file in ``C:/pilgrim_test`` first and recalled when the module finishes,
 which restores the measurements and the results table the tests delete and add; the file and the
 directory are deleted again. The response header and verbosity states every connection sets are
@@ -63,6 +63,12 @@ STEP_BELOW, STEP_ABOVE = 2e-6, 5e-6
 # Horizontal scales far outside the range of every model, which the instrument clamps.
 HUGE_SCALE = 1e6
 TINY_SCALE = 1e-15
+# The lowest bandwidth limit, which every model offers (the manual's example uses it).
+LOW_BANDWIDTH = 20e6
+# A bandwidth between two limits the instrument offers, which it rounds silently to one of them.
+OFF_STEP_BANDWIDTH = 30e6
+# A bandwidth far above the maximum of every model, which the instrument clamps.
+HUGE_BANDWIDTH = 1e12
 # The measurement types the transient procedure needs.
 TRANSIENT_TYPES = ["MEAN", "MINIMUM", "MAXIMUM", "TOP", "BASE", "PK2PK", "RISETIME", "FALLTIME"]
 PERCENT_LEVELS = [
@@ -465,6 +471,35 @@ def test_trigger_level_round_trips_and_clamps_silently(mso, keep):
     assert mso.check_errors() == []
     mso.ch1.trigger_level = level
     assert mso.ch1.trigger_level == level
+
+
+def test_bandwidth_limit_round_trips_and_full_is_the_maximum(mso, keep):
+    keep(mso.ch1, "bandwidth")
+    mso.ch1.bandwidth = "FULL"
+    full = mso.ch1.bandwidth
+    # The query returns the bandwidth in effect as a number, never the keyword.
+    assert isinstance(full, float)
+    mso.ch1.bandwidth = LOW_BANDWIDTH
+    assert mso.ch1.bandwidth == LOW_BANDWIDTH
+    assert full > LOW_BANDWIDTH
+    mso.ch1.bandwidth = "FULL"
+    assert mso.ch1.bandwidth == full
+    assert mso.check_errors() == []
+
+
+def test_bandwidth_rounds_off_step_value_and_clamps_silently(mso, keep):
+    keep(mso.ch1, "bandwidth")
+    mso.ch1.bandwidth = "FULL"
+    full = mso.ch1.bandwidth
+    # The query returns the bandwidth in effect as a number, never the keyword.
+    assert isinstance(full, float)
+    mso.ch1.bandwidth = OFF_STEP_BANDWIDTH
+    rounded = mso.ch1.bandwidth
+    assert rounded != OFF_STEP_BANDWIDTH
+    assert LOW_BANDWIDTH <= rounded <= full
+    mso.ch1.bandwidth = HUGE_BANDWIDTH
+    assert mso.ch1.bandwidth == full
+    assert mso.check_errors() == []
 
 
 def test_set_trigger_level_to_midpoint_centers_the_level_in_the_signal(

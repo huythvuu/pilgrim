@@ -111,6 +111,25 @@ def _measurement_source(value: str, values: Sequence[str]) -> str:
     raise ValueError(f"Value of {value} is not in {list(values)} or of the form MATH<n> or REF<n>")
 
 
+# The keyword that removes the bandwidth limit of a channel.
+FULL_BANDWIDTH = "FULL"
+
+
+def _bandwidth_argument(value: float | str, values: Sequence[str]) -> str:
+    """Validate a bandwidth limit and format it as the command argument.
+
+    :param value: A bandwidth in hertz greater than zero, or a keyword in ``values``.
+    :param values: The accepted keywords, i.e. ``["FULL"]``.
+    :returns: The keyword, or the bandwidth formatted for the command.
+    :raises ValueError: If the value is neither a positive number nor a listed keyword.
+    """
+    if isinstance(value, str):
+        return strict_discrete_set(value, values)
+    if value > 0:
+        return f"{value:.12g}"
+    raise ValueError(f"Value of {value} is not a bandwidth greater than zero or in {list(values)}")
+
+
 # The global reference levels are set per edge and level, with the edge keyword followed by the
 # level keyword, e.g. RISEHigh.
 _EDGES = {"RISE": "rising", "FALL": "falling"}
@@ -211,6 +230,22 @@ class TektronixMSO456Channel(Channel):
         the trigger source. The instrument clamps a level outside the range it allows silently,
         without reporting an error, so read the property back to learn the level that applies.
         """,
+        check_set_errors=True,
+    )
+
+    bandwidth = Channel.control(
+        "CH{ch}:BANdwidth?",
+        "CH{ch}:BANdwidth %s",
+        """Control the low-pass bandwidth limit of the channel in hertz (float greater than zero,
+        or ``"FULL"`` to remove the limit).
+
+        The limits available depend on the model and the attached probe. The instrument rounds a
+        value to the nearest available limit and clamps one above the maximum bandwidth silently,
+        without reporting an error, so read the property back to learn the limit that applies.
+        Reading always returns the bandwidth in effect as a number, also after ``"FULL"``.
+        """,
+        validator=_bandwidth_argument,
+        values=[FULL_BANDWIDTH],
         check_set_errors=True,
     )
 

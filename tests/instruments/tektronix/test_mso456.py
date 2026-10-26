@@ -377,6 +377,10 @@ def test_mso58_has_eight_analog_channels():
         ("ch1", "trigger_level", 0.25, "TRIGger:A:LEVel:CH1 0.25"),
         ("ch4", "trigger_level", -1.5, "TRIGger:A:LEVel:CH4 -1.5"),
         ("ch4", "trigger_level", 1.23456789123e-3, "TRIGger:A:LEVel:CH4 0.00123456789123"),
+        ("ch1", "bandwidth", 20e6, "CH1:BANdwidth 20000000"),
+        ("ch4", "bandwidth", 250_000_000, "CH4:BANdwidth 250000000"),
+        ("ch1", "bandwidth", 1.23456789123e9, "CH1:BANdwidth 1234567891.23"),
+        ("ch4", "bandwidth", "FULL", "CH4:BANdwidth FULL"),
     ],
 )
 def test_channel_setter_writes_command_then_checks_errors(channel, prop, value, command):
@@ -403,6 +407,8 @@ def test_mso58_channel_setter_substitutes_its_number():
         ("ch4", "global_display_enabled", "DISplay:GLObal:CH4:STATE?", "OFF", False),
         ("ch1", "trigger_level", "TRIGger:A:LEVel:CH1?", "1.3000E+00", 1.3),
         ("ch4", "trigger_level", "TRIGger:A:LEVel:CH4?", "-250.0000E-3", -0.25),
+        ("ch1", "bandwidth", "CH1:BANdwidth?", "500.0000E+06", 500e6),
+        ("ch4", "bandwidth", "CH4:BANdwidth?", "20.0000E+06", 20e6),
     ],
 )
 def test_channel_getter(channel, prop, command, reply, value):
@@ -418,6 +424,10 @@ def test_channel_getter(channel, prop, command, reply, value):
         ("display_enabled", "ON"),
         ("display_enabled", 2),
         ("global_display_enabled", "OFF"),
+        ("bandwidth", 0),
+        ("bandwidth", -20e6),
+        ("bandwidth", "OFF"),
+        ("bandwidth", "full"),
     ],
 )
 def test_channel_invalid_value_raises_without_writing(prop, value):
@@ -433,6 +443,16 @@ def test_channel_setter_raises_when_instrument_rejects_value():
         pytest.raises(ValueError, match="rejected the setting: 221, Settings conflict"),
     ):
         mso.ch1.global_display_enabled = True
+
+
+def test_bandwidth_setter_raises_when_instrument_rejects_value():
+    command = "CH1:BANdwidth FULL"
+    reply = '221,"Settings conflict; CH1:BANDWIDTH FULL"'
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *events(reply)]) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 221, Settings conflict"),
+    ):
+        mso.ch1.bandwidth = "FULL"
 
 
 def test_mso58_trigger_source_accepts_its_eight_channels():
