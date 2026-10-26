@@ -200,12 +200,12 @@ class TransientProcedure(Procedure):
     )
     afg_resource = StringParameter(
         "AFG resource",
-        default="USB0::0x0699::0x0357::SGVJ018478::INSTR",
+        default="",
         description="VISA resource name of the function generator",
     )
     scope_resource = StringParameter(
         "Scope resource",
-        default="USB0::0x0699::0x0522::C065123::INSTR",
+        default="",
         description="VISA resource name of the oscilloscope",
     )
     capture_dest = StringParameter(
