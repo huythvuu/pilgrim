@@ -4,7 +4,12 @@ import pytest
 from pymeasure.display.inputs import IntegerInput, StringInput
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import ListInput, RippleInputsWidget, VisaResourceInput
+from pilgrim.gui.ripple.components import (
+    DirectoryInput,
+    ListInput,
+    RippleInputsWidget,
+    VisaResourceInput,
+)
 from pilgrim.procedure import RippleProcedure
 
 
@@ -26,7 +31,7 @@ def test_uses_an_input_suited_to_each_parameter(widget: RippleInputsWidget) -> N
     assert isinstance(widget.pop_min, IntegerInput)
     assert type(widget.name) is StringInput
     assert type(widget.scope_capture_dir) is StringInput
-    assert type(widget.local_capture_dir) is StringInput
+    assert isinstance(widget.local_capture_dir, DirectoryInput)
 
 
 def test_shows_the_defaults(widget: RippleInputsWidget) -> None:
@@ -34,6 +39,7 @@ def test_shows_the_defaults(widget: RippleInputsWidget) -> None:
     assert widget.loads.text() == "[0, 50, 100]"
     assert widget.horizontal_divs.text() == "[1 us, 1 ms]"
     assert widget.bandwidths.text() == "[20 MHz, 250 MHz, 1 GHz]"
+    assert widget.local_capture_dir.text() == "./results/captures/"
     assert (widget.channel.minimum(), widget.channel.maximum()) == (1, 8)
 
 

@@ -126,7 +126,7 @@ class RippleProcedure(Procedure):
     )
     scope_capture_dir = StringParameter(
         "Scope capture directory",
-        default="C:/Temp/RippleNoise/",
+        default="C:/Temp/Ripple/",
         description="Directory on the scope the captures are saved to before they are moved",
     )
     local_capture_dir = StringParameter(

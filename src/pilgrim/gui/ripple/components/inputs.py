@@ -9,6 +9,7 @@ from pymeasure.display.widgets import InputsWidget
 from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.parameters import FloatListParameter, IntegerListParameter
 
+from .directory_input import DirectoryInput
 from .list_input import ListInput
 from .visa_resource_input import VisaResourceInput
 
@@ -35,8 +36,9 @@ class RippleInputsWidget(InputsWidget):
 
     The scope resource is chosen from the instruments VISA finds (:class:`VisaResourceInput`),
     the lists of loads, horizontal scales and bandwidths are typed with live checking
-    (:class:`ListInput`), and the other parameters get PyMeasure's inputs for their types. Each
-    input is an attribute named after its parameter, e.g. ``loads``.
+    (:class:`ListInput`), the local capture directory is browsed for (:class:`DirectoryInput`),
+    and the other parameters get PyMeasure's inputs for their types. Each input is an attribute
+    named after its parameter, e.g. ``loads``.
 
     :param parent: The parent widget.
     """
@@ -52,7 +54,7 @@ class RippleInputsWidget(InputsWidget):
     bandwidths: ListInput
     pop_min: IntegerInput
     scope_capture_dir: StringInput
-    local_capture_dir: StringInput
+    local_capture_dir: DirectoryInput
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(RippleProcedure, INPUTS, parent=parent)
@@ -71,6 +73,8 @@ class RippleInputsWidget(InputsWidget):
         for name, parameter in self._procedure.parameter_objects().items():
             if name == "scope_resource":
                 parameter.ui_class = VisaResourceInput
+            elif name == "local_capture_dir":
+                parameter.ui_class = DirectoryInput
             elif isinstance(parameter, FloatListParameter | IntegerListParameter):
                 parameter.ui_class = ListInput
         super()._setup_ui()
