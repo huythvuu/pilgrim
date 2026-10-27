@@ -1,5 +1,7 @@
 """Tests for the ripple procedure that need no instruments."""
 
+import logging
+import re
 import threading
 from collections.abc import Iterable, Mapping
 from itertools import repeat
@@ -11,7 +13,8 @@ import pytest
 
 from pilgrim.procedure import RippleProcedure, procedure_ripple
 
-DEFAULT_DIRECTORIES = ["C:/Temp", "C:/Temp/RippleNoise"]
+DEFAULT_DIRECTORIES = ["C:/Temp", "C:/Temp/Ripple"]
+LOGGER = "pilgrim.procedure.procedure_ripple"
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +46,8 @@ def make_scope(
 ) -> MagicMock:
     """Return a mock scope listing ``names``, whose measurements read ``populations`` in turn.
 
-    Measurement ``n`` reads a maximum of ``n / 100``.
+    Measurement ``n`` has ``n`` as its id, reads a maximum of ``n / 100`` and has no
+    population limit.
 
     :param names: The measurement names the scope lists, e.g. ``["MEAS1"]``.
     :param populations: The populations read, one per read; every measurement reads a list
@@ -83,9 +87,13 @@ def make_scope(
 
     def add_child(cls: type, number: int, **kwargs: object) -> MagicMock:
         measurement = MagicMock()
+        measurement.id = number
         type(measurement).population = PropertyMock(side_effect=populations)
         measurement.type, measurement.source = (kinds or {}).get(number, ("PK2PK", "CH1"))
         measurement.maximum = number / 100
+        measurement.uses_global_population_limit = False
+        measurement.population_limit_enabled = False
+        measurement.population_limit = 1000
         scope.measurements[number] = measurement
         return measurement
 
@@ -124,13 +132,20 @@ def test_parameters_have_defaults() -> None:
     assert procedure.scope_resource == ""
 
 
-def test_startup_connects_to_scope_resource(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_startup_connects_to_scope_resource(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     scope_class = MagicMock()
+    scope_class.return_value.id = "TEKTRONIX,MSO58,C031408,CF:91.1CT FV:1.34.8"
+    scope_class.return_value.acquisition_enabled = True
     monkeypatch.setattr(procedure_ripple, "TektronixMSO58", scope_class)
     procedure = RippleProcedure(scope_resource="TCPIP::scope::INSTR")
     procedure.refresh_parameters()
-    procedure.startup()
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        procedure.startup()
     scope_class.assert_called_once_with("TCPIP::scope::INSTR")
+    connected = "Connected to TEKTRONIX,MSO58,C031408,CF:91.1CT FV:1.34.8, found acquiring."
+    assert connected in caplog.messages
     assert scope_class.return_value.acquisition_enabled is False
     scope_class.return_value.clear_acquisitions.assert_called_once_with()
     procedure.shutdown()
@@ -181,13 +196,13 @@ def test_execute_acquires_until_population_at_every_combination(
         ("clear",),
         ("acquisition", True),
         ("acquisition", False),
-        ("save_image", "C:/Temp/RippleNoise/12Vin ripple 0Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/12Vin ripple 0Load 1us 20MHz.png"),
         ("horizontal_scale", 1e-6),
         ("bandwidth", 1, 1e9),
         ("clear",),
         ("acquisition", True),
         ("acquisition", False),
-        ("save_image", "C:/Temp/RippleNoise/12Vin ripple 0Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/12Vin ripple 0Load 1us 1GHz.png"),
     ]
     assert next(populations, None) is None
     emit: Any = procedure.emit
@@ -308,16 +323,16 @@ def test_execute_pauses_before_every_load_change(monkeypatch: pytest.MonkeyPatch
     pauses = [event for event in events if event[0] in {"pause", "save_image"}]
     assert pauses == [
         ("pause", "Set the load to 0."),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 1GHz.png"),
         ("pause", "Set the load to 50."),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 1GHz.png"),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 1GHz.png"),
         ("pause", "Set the load to 0."),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 1GHz.png"),
     ]
 
 
@@ -405,8 +420,8 @@ def test_execute_without_measurements_raises(monkeypatch: pytest.MonkeyPatch) ->
     ("directories", "made"),
     [
         (DEFAULT_DIRECTORIES, []),
-        (["C:/Temp"], ["C:/Temp/RippleNoise"]),
-        ([], ["C:/Temp", "C:/Temp/RippleNoise"]),
+        (["C:/Temp"], ["C:/Temp/Ripple"]),
+        ([], ["C:/Temp", "C:/Temp/Ripple"]),
     ],
 )
 def test_execute_makes_missing_capture_directories(
@@ -446,9 +461,9 @@ def test_execute_moves_captures_to_local_directory(
     procedure.execute()
     assert sorted(path.name for path in local_directory.iterdir()) == sorted(names)
     for name in names:
-        scope_path = f"C:/Temp/RippleNoise/{name}"
+        scope_path = f"C:/Temp/Ripple/{name}"
         assert (local_directory / name).read_bytes() == f"image of {scope_path}".encode()
-    assert deleted == [f"C:/Temp/RippleNoise/{name}" for name in names]
+    assert deleted == [f"C:/Temp/Ripple/{name}" for name in names]
 
 
 def test_capture_stays_on_scope_when_transfer_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -506,3 +521,104 @@ def test_format_with_si_prefix(value: float, unit: str, text: str) -> None:
 
 def test_shutdown_before_startup_does_not_raise() -> None:
     RippleProcedure().shutdown()
+
+
+ONE_COMBINATION = {"loads": [0], "horizontal_divs": [1e-6], "bandwidths": [20e6]}
+
+
+def test_execute_logs_every_population_per_poll(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A shared iterator: every poll reads both measurements, in the order the scope lists them.
+    populations = iter([0, 100, 300, 300])
+    scope = make_scope(["MEAS1", "MEAS3"], populations, [])
+    scope.acquisition_count = 1234
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        procedure.execute()
+    assert next(populations, None) is None
+    polls = [message for message in caplog.messages if message.startswith("Poll ")]
+    assert [poll.split(", read in ")[0] for poll in polls] == [
+        "Poll 1: MEAS1=0, MEAS3=100 (min 300)",
+        "Poll 2: MEAS1=300, MEAS3=300 (min 300)",
+    ]
+    assert all(re.fullmatch(r".*, read in \d+\.\d\d s\.", poll) for poll in polls)
+    timed = [re.sub(r"\d+\.\d s", "N s", message) for message in caplog.messages]
+    assert "Populations filled in N s over 2 polls: MEAS1=300, MEAS3=300." in timed
+    assert "PK2PK maximum 0.01 V from 300 values over 1234 acquisitions." in caplog.messages
+
+
+def test_execute_warns_when_short_populations_stall(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # MEAS1 is filled and keeps growing, while MEAS2 is stuck at 0 until the last poll.
+    populations = iter([300, 0, 400, 0, 500, 0, 600, 300])
+    scope = make_scope(["MEAS1", "MEAS2"], populations, [])
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
+    clock = 0.0
+
+    def poll_takes_six_seconds(_seconds: float) -> None:
+        nonlocal clock
+        clock += 6.0
+
+    monkeypatch.setattr(procedure_ripple, "perf_counter", lambda: clock)
+    monkeypatch.setattr(procedure_ripple, "sleep", poll_takes_six_seconds)
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        procedure.execute()
+    assert next(populations, None) is None
+    assert caplog.messages == [
+        "Populations short of 300 unchanged for 12 s: MEAS2=0; acquisition continues until "
+        "they fill."
+    ]
+
+
+def test_execute_logs_the_measurements_found(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    kinds = {2: ("FREQUENCY", "CH2"), 3: ("MEAN", "CH1"), 4: ("MINIMUM", "CH1")}
+    scope = make_scope(["MEAS1", "MEAS2", "MEAS3", "MEAS4"], repeat(300), [], kinds=kinds)
+    add_child = scope.add_child.side_effect
+
+    def add_child_with_limit(cls: type, number: int, **kwargs: object) -> MagicMock:
+        measurement = add_child(cls, number, **kwargs)
+        if measurement.type == "FREQUENCY":
+            measurement.population_limit_enabled = True
+            measurement.population_limit = 100
+        elif measurement.type == "MEAN":
+            measurement.uses_global_population_limit = True
+        elif measurement.type == "MINIMUM":
+            measurement.population_limit_enabled = True
+            measurement.population_limit = 300
+        return measurement
+
+    scope.add_child.side_effect = add_child_with_limit
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        procedure.execute()
+    described = [message for message in caplog.messages if message.startswith("Scope measurement")]
+    assert described == [
+        "Scope measurement MEAS1: PK2PK of CH1, no population limit.",
+        "Scope measurement MEAS2: FREQUENCY of CH2, population limit 100.",
+        "Scope measurement MEAS3: MEAN of CH1, global population limit.",
+        "Scope measurement MEAS4: MINIMUM of CH1, population limit 300.",
+    ]
+    warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    assert warnings == [
+        "MEAS2 stops at 100 values, below the minimum of 300, so its population can never fill."
+    ]
+
+
+def test_execute_logs_capture_save_and_transfer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    scope = make_scope(["MEAS1"], [300], [])
+    procedure = make_running_procedure(monkeypatch, scope, vin=12, pop_min=300, **ONE_COMBINATION)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        procedure.execute()
+    name = "12Vin ripple 0Load 1us 20MHz.png"
+    scope_path = f"C:/Temp/Ripple/{name}"
+    size = len(f"image of {scope_path}".encode())
+    timed = [re.sub(r"\d+\.\d s", "N s", message) for message in caplog.messages]
+    assert f"Capture saved to {scope_path} on the scope in N s." in timed
+    local_path = procedure.local_capture_directory / name
+    assert f"Capture moved to {local_path}: {size} bytes in N s." in timed

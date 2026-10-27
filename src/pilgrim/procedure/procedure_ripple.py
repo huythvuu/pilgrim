@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable
 from enum import IntEnum
 from pathlib import Path
-from time import sleep
+from time import perf_counter, sleep
 from typing import Any, ClassVar
 
 from pymeasure.experiment import Procedure
@@ -20,6 +20,10 @@ log.addHandler(logging.NullHandler())
 # How often the scope measurement populations are polled while waiting for them to fill, and how
 # often a paused procedure checks whether it was asked to stop.
 POLL_INTERVAL = 0.1
+# How long the populations still short of the minimum may stay unchanged, in seconds,
+# before a warning names them; a measurement that collects no values would otherwise hold
+# the acquisition silently.
+STALL_WARNING_INTERVAL = 10.0
 
 
 class ScopeEvent(IntEnum):
@@ -163,6 +167,8 @@ class RippleProcedure(Procedure):
         """Connect to the scope, stop acquisition, and reset the measurement populations."""
         log.info("Connecting to the scope.")
         self.scope = TektronixMSO58(self.scope_resource)
+        state = "acquiring" if self.scope.acquisition_enabled else "stopped"
+        log.info(f"Connected to {self.scope.id}, found {state}.")
         self.scope.acquisition_enabled = False
         self.scope.clear_acquisitions()
         _ = self.scope.complete  # The scope clears in the background.
@@ -189,6 +195,8 @@ class RippleProcedure(Procedure):
         measurements = self._attach_measurements()
         if not measurements:
             raise ValueError("The scope has no measurements; add at least one on the scope.")
+        for measurement in measurements:
+            _log_measurement(measurement, self.pop_min)
         peak_to_peak = self._peak_to_peak_measurement(measurements)
         scope_directory = self._make_scope_capture_dir()
         local_directory = self.local_capture_directory
@@ -204,23 +212,31 @@ class RippleProcedure(Procedure):
                     log.info("Ripple measurement stopped.")
                     return
                 previous_load = load
+            started = perf_counter()
             self.scope.horizontal_scale = horizontal_div
             channel.bandwidth = bandwidth
+            actual_scale, actual_bandwidth = self.scope.horizontal_scale, channel.bandwidth
+            # The scope can take seconds over these settings, so the time spent is logged.
             log.info(
-                f"Acquiring at load {load}, {self.scope.horizontal_scale} s/div, "
-                f"{channel.bandwidth} Hz."
+                f"Acquiring at load {load}, {actual_scale} s/div, {actual_bandwidth} Hz; set "
+                f"and read back in {perf_counter() - started:.1f} s."
             )
             # Starting acquisition carries the statistics on, so they are cleared first.
             self.scope.clear_acquisitions()
             _ = self.scope.complete  # The scope clears in the background.
             self.scope.acquisition_enabled = True
-            filled = self._wait_for_population(measurements)
+            populations = self._wait_for_population(measurements)
             self.scope.acquisition_enabled = False
-            if not filled:
+            if populations is None:
                 log.info("Ripple measurement stopped.")
                 return
             _ = self.scope.complete  # Lets the stop take effect before the maximum is read.
             maximum = _number(peak_to_peak.maximum, f"{PEAK_TO_PEAK} maximum")
+            population = populations[_measurement_number(peak_to_peak)]
+            log.info(
+                f"{PEAK_TO_PEAK} maximum {maximum} V from {population} values over "
+                f"{self.scope.acquisition_count} acquisitions."
+            )
             file_name = self.capture_file_name(load, horizontal_div, bandwidth)
             scope_path = f"{scope_directory}/{file_name}"
             self._save_capture(scope_path)
@@ -335,13 +351,14 @@ class RippleProcedure(Procedure):
         :param path: The path of the capture on the scope, whose extension selects the format.
         :raises ValueError: If the scope could not save the capture.
         """
+        started = perf_counter()
         self.scope.save_image(path)
         _ = self.scope.complete  # The scope saves in the background.
         # A failed save queues its event only once complete, and raises nothing by itself.
         events = self.scope.check_errors()
         if any(code == ScopeEvent.SAVE_FAILED for code, _ in events):
             raise ValueError(f"The scope could not save the capture {path}.")
-        log.info(f"Capture saved to {path} on the scope.")
+        log.info(f"Capture saved to {path} on the scope in {perf_counter() - started:.1f} s.")
 
     def _cut_capture(self, scope_path: str, local_path: Path) -> None:
         """Move a capture from the scope to this computer.
@@ -352,9 +369,13 @@ class RippleProcedure(Procedure):
         :param scope_path: The path of the capture on the scope.
         :param local_path: The path to write the capture to, replacing any file there.
         """
-        local_path.write_bytes(self.scope.read_file(scope_path))
+        started = perf_counter()
+        capture = self.scope.read_file(scope_path)
+        transfer = perf_counter() - started
+        local_path.write_bytes(capture)
         self.scope.delete_file(scope_path)
-        log.info(f"Capture moved to {local_path}.")
+        # A short transfer is the first sign of a read the scope cut off.
+        log.info(f"Capture moved to {local_path}: {len(capture)} bytes in {transfer:.1f} s.")
 
     def _peak_to_peak_measurement(
         self, measurements: list[TektronixMSO456Measurement]
@@ -394,18 +415,56 @@ class RippleProcedure(Procedure):
                 )
         return [scope.measurements[number] for number in numbers]
 
-    def _wait_for_population(self, measurements: list[TektronixMSO456Measurement]) -> bool:
+    def _wait_for_population(
+        self, measurements: list[TektronixMSO456Measurement]
+    ) -> dict[int, int] | None:
         """Wait until every measurement has collected ``pop_min`` values.
 
+        Every poll reads every measurement and logs the populations at debug level. Once the
+        populations still short of the minimum have not changed for ``STALL_WARNING_INTERVAL``
+        seconds, a warning names them.
+
         :param measurements: The measurements on the scope.
-        :returns: Whether the populations filled; False when the procedure was asked to stop
-            first.
+        :returns: The populations by measurement number once they all filled; None when the
+            procedure was asked to stop first.
         """
+        started = perf_counter()
+        previous_short: dict[int, int] | None = None
+        unchanged_since = started
+        polls = 0
         while not self.should_stop():
-            if all(_population(measurement) >= self.pop_min for measurement in measurements):
-                return True
+            polled = perf_counter()
+            populations = {
+                _measurement_number(measurement): _population(measurement)
+                for measurement in measurements
+            }
+            now = perf_counter()
+            polls += 1
+            log.debug(
+                f"Poll {polls}: {_format_populations(populations)} (min {self.pop_min}), "
+                f"read in {now - polled:.2f} s."
+            )
+            short = {number: count for number, count in populations.items() if count < self.pop_min}
+            if not short:
+                log.info(
+                    f"Populations filled in {now - started:.1f} s over {polls} polls: "
+                    f"{_format_populations(populations)}."
+                )
+                return populations
+            # Only the short measurements count as progress: a filled one keeps growing while a
+            # stuck one holds the acquisition.
+            if short != previous_short:
+                previous_short = short
+                unchanged_since = now
+            elif now - unchanged_since >= STALL_WARNING_INTERVAL:
+                log.warning(
+                    f"Populations short of {self.pop_min} unchanged for "
+                    f"{now - unchanged_since:.0f} s: {_format_populations(short)}; acquisition "
+                    "continues until they fill."
+                )
+                unchanged_since = now
             sleep(POLL_INTERVAL)
-        return False
+        return None
 
 
 def _measurement_numbers(names: object) -> list[int]:
@@ -418,6 +477,19 @@ def _measurement_numbers(names: object) -> list[int]:
     if not isinstance(names, list):
         raise TypeError(f"Measurement names must be a list, not {names!r}.")
     return [int(str(name).removeprefix("MEAS")) for name in names]
+
+
+def _measurement_number(measurement: TektronixMSO456Measurement) -> int:
+    """Return the number of a measurement, e.g. 3 for MEAS3.
+
+    :param measurement: The measurement.
+    :returns: Its number.
+    :raises TypeError: If the measurement's id is not an int.
+    """
+    number = measurement.id
+    if not isinstance(number, int):
+        raise TypeError(f"Measurement id must be an int, not {number!r}.")
+    return number
 
 
 def _number(value: object, name: str) -> float:
@@ -444,3 +516,41 @@ def _population(measurement: TektronixMSO456Measurement) -> int:
     if not isinstance(population, int):
         raise TypeError(f"Population must be an int, not {population!r}.")
     return population
+
+
+def _format_populations(populations: dict[int, int]) -> str:
+    """Return populations by measurement number for the log, e.g. ``"MEAS1=312, MEAS3=0"``.
+
+    :param populations: The populations by measurement number.
+    :returns: The populations formatted in the order given.
+    """
+    return ", ".join(f"MEAS{number}={count}" for number, count in populations.items())
+
+
+def _log_measurement(measurement: TektronixMSO456Measurement, pop_min: int) -> None:
+    """Log a measurement's number, type, source and population limit.
+
+    A limit enabled below ``pop_min`` is logged as a warning as well, since the population then
+    stops short of the minimum and the acquisition never ends.
+
+    :param measurement: The measurement.
+    :param pop_min: The population minimum the measurement has to reach.
+    :raises TypeError: If the driver returns anything but an int for the limit.
+    """
+    number = _measurement_number(measurement)
+    kind = f"{measurement.type} of {measurement.source}"
+    if measurement.uses_global_population_limit:
+        log.info(f"Scope measurement MEAS{number}: {kind}, global population limit.")
+        return
+    if not measurement.population_limit_enabled:
+        log.info(f"Scope measurement MEAS{number}: {kind}, no population limit.")
+        return
+    limit: object = measurement.population_limit
+    if not isinstance(limit, int):
+        raise TypeError(f"Population limit must be an int, not {limit!r}.")
+    log.info(f"Scope measurement MEAS{number}: {kind}, population limit {limit}.")
+    if limit < pop_min:
+        log.warning(
+            f"MEAS{number} stops at {limit} values, below the minimum of {pop_min}, so its "
+            "population can never fill."
+        )

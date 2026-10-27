@@ -28,9 +28,13 @@ def make_scope() -> MagicMock:
 
     def add_child(cls: type, number: int, **kwargs: object) -> MagicMock:
         measurement = MagicMock()
+        measurement.id = number
         measurement.type, measurement.source = "PK2PK", "CH1"
         measurement.population = 300
         measurement.maximum = 0.01
+        measurement.uses_global_population_limit = False
+        measurement.population_limit_enabled = False
+        measurement.population_limit = 1000
         scope.measurements[number] = measurement
         return measurement
 
