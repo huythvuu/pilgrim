@@ -1,5 +1,6 @@
 """Tests for the ripple procedure that need no instruments."""
 
+import threading
 from collections.abc import Iterable, Mapping
 from itertools import repeat
 from pathlib import Path
@@ -101,15 +102,17 @@ def make_running_procedure(
 ) -> RippleProcedure:
     """Return a procedure connected to ``scope``, set up as a worker would run it.
 
-    :param monkeypatch: Replaces the polling sleep, the load prompt and the worker's hooks.
+    Every pause resumes at once.
+
+    :param monkeypatch: Replaces the polling sleep and the worker's hooks.
     :param scope: The mock scope.
     :param parameters: Parameter values by name.
     """
     monkeypatch.setattr(procedure_ripple, "sleep", lambda seconds: None)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
     procedure = RippleProcedure(**parameters)
     procedure.refresh_parameters()
     procedure.scope = scope
+    procedure.pause_handler = lambda prompt: procedure.resume()
     monkeypatch.setattr(procedure, "should_stop", lambda: False)
     monkeypatch.setattr(procedure, "emit", MagicMock())
     return procedure
@@ -284,7 +287,7 @@ def test_execute_stops_acquisition_when_asked_to_stop(monkeypatch: pytest.Monkey
     ]
 
 
-def test_execute_prompts_before_every_load_change(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_pauses_before_every_load_change(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[tuple[Any, ...]] = []
     scope = make_scope(["MEAS1"], repeat(300), events)
     procedure = make_running_procedure(
@@ -295,22 +298,99 @@ def test_execute_prompts_before_every_load_change(monkeypatch: pytest.MonkeyPatc
         horizontal_divs=[1e-6],
         bandwidths=[20e6, 1e9],
     )
-    monkeypatch.setattr("builtins.input", lambda prompt="": events.append(("input", prompt)))
+
+    def record_and_resume(prompt: str) -> None:
+        events.append(("pause", prompt))
+        procedure.resume()
+
+    procedure.pause_handler = record_and_resume
     procedure.execute()
-    loads = [event for event in events if event[0] in {"input", "save_image"}]
-    assert loads == [
-        ("input", "Set the load to 0, then press Enter to continue. "),
+    pauses = [event for event in events if event[0] in {"pause", "save_image"}]
+    assert pauses == [
+        ("pause", "Set the load to 0."),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 20MHz.png"),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 1GHz.png"),
-        ("input", "Set the load to 50, then press Enter to continue. "),
+        ("pause", "Set the load to 50."),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 20MHz.png"),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 1GHz.png"),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 20MHz.png"),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 50Load 1us 1GHz.png"),
-        ("input", "Set the load to 0, then press Enter to continue. "),
+        ("pause", "Set the load to 0."),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 20MHz.png"),
         ("save_image", "C:/Temp/RippleNoise/0Vin ripple 0Load 1us 1GHz.png"),
     ]
+
+
+def test_execute_stops_while_paused_when_asked_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope(["MEAS1"], repeat(300), events)
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **TWO_COMBINATIONS)
+    monkeypatch.setattr(procedure_ripple, "POLL_INTERVAL", 0.001)
+    stopped = False
+
+    def stop_instead_of_resuming(prompt: str) -> None:
+        nonlocal stopped
+        stopped = True
+
+    procedure.pause_handler = stop_instead_of_resuming
+    monkeypatch.setattr(procedure, "should_stop", lambda: stopped)
+    procedure.execute()
+    assert events == []  # Nothing was set on the scope.
+    emit: Any = procedure.emit
+    emit.assert_not_called()
+
+
+def test_pause_resumes_from_another_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    procedure = make_running_procedure(monkeypatch, make_scope([], [], []))
+    prompts: list[str] = []
+
+    def resume_soon(prompt: str) -> None:
+        prompts.append(prompt)
+        threading.Timer(0.01, procedure.resume).start()
+
+    procedure.pause_handler = resume_soon
+    assert procedure.pause("Set the load to 50.") is True
+    assert prompts == ["Set the load to 50."]
+
+
+def test_pause_returns_false_when_asked_to_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    procedure = make_running_procedure(monkeypatch, make_scope([], [], []))
+    monkeypatch.setattr(procedure_ripple, "POLL_INTERVAL", 0.001)
+    procedure.pause_handler = lambda prompt: None
+    monkeypatch.setattr(procedure, "should_stop", lambda: True)
+    assert procedure.pause("Set the load to 50.") is False
+
+
+def test_resume_before_pause_is_not_remembered(monkeypatch: pytest.MonkeyPatch) -> None:
+    procedure = make_running_procedure(monkeypatch, make_scope([], [], []))
+    monkeypatch.setattr(procedure_ripple, "POLL_INTERVAL", 0.001)
+    procedure.resume()
+    procedure.pause_handler = lambda prompt: None
+    monkeypatch.setattr(procedure, "should_stop", lambda: True)
+    assert procedure.pause("Set the load to 50.") is False
+
+
+def test_default_pause_handler_prompts_on_the_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt))
+    procedure = RippleProcedure()
+    monkeypatch.setattr(procedure, "should_stop", lambda: False)
+    assert procedure.pause_handler == procedure.prompt_on_console
+    assert procedure.pause("Set the load to 50.") is True
+    assert prompts == ["Set the load to 50. Press Enter to continue. "]
+
+
+def test_local_capture_directory_is_captures_in_the_local_capture_dir() -> None:
+    procedure = RippleProcedure(local_capture_dir="nested/results")
+    procedure.refresh_parameters()
+    assert procedure.local_capture_directory == Path("nested/results") / "captures"
+    assert RippleProcedure().local_capture_directory == Path("results/captures/captures")
+
+
+@pytest.mark.parametrize("channel", [0, 9])
+def test_channel_outside_the_scope_channels_is_rejected(channel: int) -> None:
+    with pytest.raises(ValueError, match=r"minimum|maximum"):
+        RippleProcedure(channel=channel).refresh_parameters()
 
 
 def test_execute_without_measurements_raises(monkeypatch: pytest.MonkeyPatch) -> None:

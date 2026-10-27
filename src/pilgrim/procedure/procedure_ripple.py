@@ -1,10 +1,12 @@
 """Output voltage ripple capture procedure."""
 
 import logging
+import threading
+from collections.abc import Callable
 from enum import IntEnum
 from pathlib import Path
 from time import sleep
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pymeasure.experiment import Procedure
 
@@ -15,7 +17,8 @@ from .parameters import FloatListParameter, IntegerListParameter, IntegerParamet
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
-# How often the scope measurement populations are polled while waiting for them to fill.
+# How often the scope measurement populations are polled while waiting for them to fill, and how
+# often a paused procedure checks whether it was asked to stop.
 POLL_INTERVAL = 0.1
 
 
@@ -68,7 +71,15 @@ def format_with_si_prefix(value: float, unit: str) -> str:
 
 
 class RippleProcedure(Procedure):
-    """Capture the output voltage ripple on an MSO58 oscilloscope."""
+    """Capture the output voltage ripple on an MSO58 oscilloscope.
+
+    No instrument here controls the load, so before the first combination and whenever the load
+    changes, the procedure pauses for the user to set it: it hands a prompt such as
+    ``"Set the load to 50."`` to :attr:`pause_handler` and waits until :meth:`resume` is called,
+    or until it is asked to stop. By default the prompt is printed and Enter resumes, as on a
+    command line; a GUI replaces the handler with one that shows the prompt and resumes from a
+    button.
+    """
 
     name = StringParameter(
         "Procedure name",
@@ -83,46 +94,45 @@ class RippleProcedure(Procedure):
     channel = IntegerParameter(
         "Channel",
         default=1,
-        description="Scope channel"
+        minimum=1,
+        maximum=8,
+        description="Scope channel of the output voltage",
     )
-    vin = IntegerParameter(
-        "Vin",
-        default=0,
-        description="Nominal input voltage"
-    )
+    vin = IntegerParameter("Vin", default=0, description="Nominal input voltage")
     loads = IntegerListParameter(
         "Loads",
         default=[0, 50, 100],
-        minimum = 0,
-        maximum = 100,
-        description="Load values to check"
+        minimum=0,
+        maximum=100,
+        description="Load values to check",
     )
     horizontal_divs = FloatListParameter(
         "Horizontal divs",
         units="s",
         default=[1e-6, 1e-3],  # 1 us, 1 ms
-        description="Horizontal div values to check"
+        description="Horizontal div values to check",
     )
     bandwidths = FloatListParameter(
         "Bandwidths",
         units="Hz",
         default=[20e6, 250e6, 1e9],
-        description="Bandwith values to check"
+        description="Bandwith values to check",
     )
     pop_min = IntegerParameter(
         "Sample population minimum",
         default=300,
         minimum=0,
-        description="Takes captures until at least the population minimum"
+        description="Takes captures until at least the population minimum",
     )
     scope_capture_dir = StringParameter(
         "Scope capture directory",
-        default="C:/Temp/RippleNoise/"
+        default="C:/Temp/RippleNoise/",
+        description="Directory on the scope the captures are saved to before they are moved",
     )
     local_capture_dir = StringParameter(
         "Local capture directory",
         default="./results/captures/",
-        description="Directory on PC to save captures"
+        description="Directory on PC to save captures",
     )
 
     DATA_COLUMNS: ClassVar[list[str]] = [
@@ -134,6 +144,20 @@ class RippleProcedure(Procedure):
     ]
 
     scope: TektronixMSO58
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._resumed = threading.Event()
+        #: Receives the prompt each time the procedure pauses; see :meth:`pause`.
+        self.pause_handler: Callable[[str], None] = self.prompt_on_console
+
+    @property
+    def local_capture_directory(self) -> Path:
+        """Get the directory on this computer the captures are moved to.
+
+        It is ``captures`` inside ``local_capture_dir``.
+        """
+        return Path(self.local_capture_dir) / "captures"
 
     def startup(self) -> None:
         """Connect to the scope, stop acquisition, and reset the measurement populations."""
@@ -147,13 +171,13 @@ class RippleProcedure(Procedure):
         """Acquire at every combination until each scope measurement has ``pop_min`` values.
 
         The measurements are the ones set up on the scope, e.g. from its front panel. Before the
-        first combination and whenever the load changes, the procedure blocks until the user
-        has set the load and pressed Enter on standard input. At every combination, the scope's
-        horizontal scale and the bandwidth limit of ``channel`` are set, the statistics restart,
-        acquisition runs until every measurement has collected ``pop_min`` values, and then
-        stops. The scope rounds both settings to ones it supports.
+        first combination and whenever the load changes, the procedure pauses until the user
+        has set the load, see :meth:`pause`. At every combination, the scope's horizontal scale
+        and the bandwidth limit of ``channel`` are set, the statistics restart, acquisition runs
+        until every measurement has collected ``pop_min`` values, and then stops. The scope
+        rounds both settings to ones it supports.
         A capture of the screen is then saved on the scope in ``scope_capture_dir`` under
-        :meth:`capture_file_name`, and moved to ``captures`` in ``local_capture_dir`` on this
+        :meth:`capture_file_name`, and moved to :attr:`local_capture_directory` on this
         computer, so the scope keeps none of the captures; both directories are created first
         if they do not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
         the maximum over all acquisitions of the first PK2PK measurement of ``channel`` that
@@ -162,25 +186,30 @@ class RippleProcedure(Procedure):
         :raises ValueError: If the scope has no measurements or no PK2PK measurement of
             ``channel``, or a capture could not be saved.
         """
-        log.info("Starting ripple measurement.")
         measurements = self._attach_measurements()
         if not measurements:
             raise ValueError("The scope has no measurements; add at least one on the scope.")
         peak_to_peak = self._peak_to_peak_measurement(measurements)
         scope_directory = self._make_scope_capture_dir()
-        local_directory = Path(self.local_capture_dir) / "captures"
+        local_directory = self.local_capture_directory
         local_directory.mkdir(parents=True, exist_ok=True)
         channel = self.scope.channels[self.channel]
         combinations = self.combinations()
+        log.info(f"Starting ripple measurement over {len(combinations)} combinations.")
         previous_load: int | None = None
         for done, (load, horizontal_div, bandwidth) in enumerate(combinations, start=1):
             if load != previous_load:
                 # No instrument here controls the load, so the user sets it.
-                input(f"Set the load to {load}, then press Enter to continue. ")
+                if not self.pause(f"Set the load to {load}."):
+                    log.info("Ripple measurement stopped.")
+                    return
                 previous_load = load
             self.scope.horizontal_scale = horizontal_div
             channel.bandwidth = bandwidth
-            log.info(f"Acquiring at load {load}, {self.scope.horizontal_scale} s/div, {channel.bandwidth} Hz.")  # noqa: E501
+            log.info(
+                f"Acquiring at load {load}, {self.scope.horizontal_scale} s/div, "
+                f"{channel.bandwidth} Hz."
+            )
             # Starting acquisition carries the statistics on, so they are cleared first.
             self.scope.clear_acquisitions()
             _ = self.scope.complete  # The scope clears in the background.
@@ -214,6 +243,40 @@ class RippleProcedure(Procedure):
         if getattr(self, "scope", None) is not None:
             self.scope.adapter.close()
         log.info("Ending ripple measurement.")
+
+    def pause(self, prompt: str) -> bool:
+        """Pause until :meth:`resume` is called, or the procedure is asked to stop.
+
+        The prompt is logged and passed to :attr:`pause_handler`, which must see to it that
+        :meth:`resume` gets called, e.g. by reading a line from the console or by enabling a
+        button.
+
+        :param prompt: What the user is to do before the procedure continues, e.g.
+            ``"Set the load to 50."``.
+        :returns: Whether the procedure was resumed; False when it was asked to stop first.
+        """
+        self._resumed.clear()
+        log.info(f"Paused: {prompt}")
+        self.pause_handler(prompt)
+        while not self._resumed.wait(POLL_INTERVAL):
+            if self.should_stop():
+                return False
+        log.info("Resumed.")
+        return True
+
+    def resume(self) -> None:
+        """Let a paused procedure continue; may be called from any thread, e.g. by a GUI."""
+        self._resumed.set()
+
+    def prompt_on_console(self, prompt: str) -> None:
+        """Print the prompt on the console and resume the procedure once Enter is pressed.
+
+        The default :attr:`pause_handler`.
+
+        :param prompt: The prompt to print.
+        """
+        input(f"{prompt} Press Enter to continue. ")
+        self.resume()
 
     def combinations(self) -> list[tuple[int, float, float]]:
         """Return every combination of load, horizontal scale and bandwidth to capture at.

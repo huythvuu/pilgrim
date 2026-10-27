@@ -98,6 +98,10 @@ Communication requires NI-VISA installed on the host; PyVISA uses it as the back
 ### Measurement and GUI
 
 - Procedures inherit from `pymeasure.experiment.Procedure`
+- A procedure never reads standard input; when it needs the user to act (e.g. set a load), it pauses through a handler the runner supplies, as `RippleProcedure.pause` does, so it runs from the command line and from a GUI alike
+- GUIs live in `src/pilgrim/gui/<procedure>/`, one package per procedure: the window in `window.py`, built on PyMeasure's `ManagedWindowBase`, and its widgets in `components/`
+- Import Qt through `pymeasure.display.Qt` (QtPy over PySide6), as PyMeasure's own widgets do; Qt methods that are overridden, such as `showPopup`, keep their camelCase names
+- GUI tests live in `tests/gui/<procedure>/`, use pytest-qt's `qtbot` fixture, and run offscreen (`tests/gui/conftest.py` sets `QT_QPA_PLATFORM`), so `uv run pytest` passes without a display
 
 ## Documentation Standards
 

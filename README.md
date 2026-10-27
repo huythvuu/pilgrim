@@ -44,10 +44,24 @@ If an instrument is missing, check it in NI MAX (NI Measurement & Automation Exp
 ```text
 src/pilgrim/
     instruments/<manufacturer>/   Instrument drivers, one module per instrument family
+    procedure/                    Test procedures and their parameter types
+    gui/<procedure>/              GUI of a procedure: its window and, in components/, its widgets
 tests/
     instruments/<manufacturer>/   Protocol tests (no hardware) and *_with_device tests
+    procedure/                    Procedure tests against mock instruments
+    gui/<procedure>/              GUI tests, run offscreen with pytest-qt
 docs/manuals/<manufacturer>/      Programmer manuals (not committed, download locally)
 ```
+
+## Running the ripple GUI
+
+```sh
+uv run pilgrim-ripple
+```
+
+The window edits the parameters of the ripple procedure, queues runs, and shows their results, captures and log.
+The procedure pauses whenever the load must be set; the window then prompts for it and beeps, and Continue resumes the procedure once the load is set.
+Abort ends a paused procedure as well.
 
 ## Development
 
