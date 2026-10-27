@@ -7,6 +7,7 @@ from pymeasure.units import ureg
 from pilgrim.procedure.parameters import (
     FloatListParameter,
     FloatRangeListParameter,
+    IntegerListParameter,
     StringParameter,
 )
 
@@ -80,6 +81,78 @@ def test_float_list_without_units_rejects_quantities() -> None:
     assert parameter.value == [1.0, 2.5]
     with pytest.raises(ValueError, match="Ratios"):
         parameter.value = ["1 kHz"]
+
+
+@pytest.fixture
+def channels() -> IntegerListParameter:
+    """Return a unitless integer list parameter bounded to 1 to 8."""
+    return IntegerListParameter("Channels", minimum=1, maximum=8)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [1, 2, 4],
+        (1, 2, 4),
+        np.array([1, 2, 4]),
+        [1.0, 2.0, 4.0],
+        ["1", "2.0", "4"],
+        "[1, 2, 4]",
+        " [ 1 , 2.0 , 4e0 ] ",
+    ],
+)
+def test_integer_list_converts(channels: IntegerListParameter, value: object) -> None:
+    channels.value = value
+    assert channels.value == [1, 2, 4]
+    assert all(type(element) is int for element in channels.value)
+
+
+def test_integer_list_converts_to_units() -> None:
+    rates = IntegerListParameter("Rates", units="Hz")
+    for value in [
+        "[1.1 kHz, 20 MHz]",
+        "[1100, 2e7] Hz",
+        [ureg.Quantity(1.1, "kHz"), "20 MHz"],
+    ]:
+        rates.value = value
+        assert rates.value == [1100, 20_000_000]
+
+
+@pytest.mark.parametrize("value", [[], (), "[]", "[ ]"])
+def test_integer_list_accepts_empty(channels: IntegerListParameter, value: object) -> None:
+    channels.value = value
+    assert channels.value == []
+    assert channels.is_set()
+
+
+@pytest.mark.parametrize("value", [[1, 2, 4], []])
+def test_integer_list_round_trips_through_string(
+    channels: IntegerListParameter, value: list[int]
+) -> None:
+    channels.value = value
+    assert " " not in str(channels)
+    assert channels.convert(str(channels)) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        1,
+        "1, 2",
+        "[1.5]",
+        [2.5],
+        [1 + 1e-6],
+        "[0]",
+        "[9]",
+        "[abc]",
+        "[1 V]",
+        [float("nan")],
+        [float("inf")],
+    ],
+)
+def test_integer_list_rejects_invalid(channels: IntegerListParameter, value: object) -> None:
+    with pytest.raises(ValueError, match="Channels"):
+        channels.value = value
 
 
 FRACTIONS = [(0.0, 0.25), (0.25, 0.75), (0.5, 1.0), (0.0, 1.0)]

@@ -1,5 +1,6 @@
 """Procedure parameters that type check as their values when read from a procedure."""
 
+import math
 import re
 from tokenize import TokenError
 from typing import TYPE_CHECKING, Any, Self, overload
@@ -101,6 +102,20 @@ class _BoundedListParameter(experiment.VectorParameter):
             raise ValueError(f"{self.name} must be a list in square brackets, not {value!r}.")
         return text[1:-1].strip()
 
+    def _list_elements(self, value: Any) -> list[Any]:
+        """Return the elements of a list, or of its string form, before conversion.
+
+        :param value: A list, tuple, or array, or a string listing elements in square brackets.
+        :returns: The elements, as strings when ``value`` is a string.
+        :raises ValueError: If the value is not a list.
+        """
+        if isinstance(value, str):
+            contents = self._list_contents(value)
+            return contents.split(",") if contents else []
+        if isinstance(value, list | tuple | np.ndarray):
+            return list(value)
+        raise ValueError(f"{self.name} must be a list, not {type(value).__name__}.")
+
     if TYPE_CHECKING:
         # PyMeasure leaves VectorParameter.convert() untyped, so a type checker infers
         # list[float] from its body, which a list of ranges would contradict.
@@ -157,14 +172,51 @@ class FloatListParameter(_TypedParameter[list[float]], _BoundedListParameter):
         :raises ValueError: If the value is not a list, or an element is not a number in
             compatible units or lies outside ``minimum`` to ``maximum``.
         """
-        if isinstance(value, str):
-            contents = self._list_contents(value)
-            elements = contents.split(",") if contents else []
-        elif isinstance(value, list | tuple | np.ndarray):
-            elements = value
-        else:
-            raise ValueError(f"{self.name} must be a list, not {type(value).__name__}.")
-        return [self._convert_element(element) for element in elements]
+        return [self._convert_element(element) for element in self._list_elements(value)]
+
+
+class IntegerListParameter(_TypedParameter[list[int]], _BoundedListParameter):
+    """Integer list procedure parameter of any length, even zero, that reads as ``list[int]``.
+
+    Every element must be a whole number in ``units``, so in Hz, ``2.0`` and ``"1.5 kHz"`` are
+    accepted, while ``2.5`` is rejected rather than rounded.
+    Elements may carry units, as Pint quantities or strings such as ``"1 kHz"``; plain numbers
+    are taken to be in ``units`` already.
+    As a string, the value is a bracketed list such as ``"[1, 2, 4]"`` or
+    ``"[100, 1000] Hz"``.
+
+    :param name: The parameter name
+    :param units: The units of measure of each element
+    :param minimum: The minimum allowed value of each element (default: -1e9)
+    :param maximum: The maximum allowed value of each element (default: 1e9)
+    :param kwargs: Passed on to :class:`pymeasure.experiment.Parameter`, such as ``default``
+    """
+
+    def convert(self, value: Any) -> list[int]:
+        """Convert a list, or its string form, to a list of integers in ``units``.
+
+        :param value: A list, tuple, or array of numbers, quantities, or strings, or a string
+            listing them in square brackets.
+        :returns: The elements as integers in ``units``.
+        :raises ValueError: If the value is not a list, or an element is not a whole number in
+            compatible units or lies outside ``minimum`` to ``maximum``.
+        """
+        return [self._convert_integer(element) for element in self._list_elements(value)]
+
+    def _convert_integer(self, element: Any) -> int:
+        """Convert one element to an integer in ``units`` and check it against the bounds.
+
+        :param element: A number, Pint quantity, or string such as ``"1 kHz"``.
+        :returns: The element as an integer in ``units``.
+        :raises ValueError: If the element is not a valid element or not a whole number.
+        """
+        number = self._convert_element(element)
+        whole = round(number)
+        # Unit conversion can leave a whole number a rounding error off, as 1.1 kHz gives
+        # 1100.0000000000002 Hz, so only a real fraction is rejected.
+        if not math.isclose(number, whole):
+            raise ValueError(f"{self.name} element {element!r} is not a whole number.")
+        return whole
 
 
 class FloatRangeListParameter(_TypedParameter[list[tuple[float, float]]], _BoundedListParameter):
