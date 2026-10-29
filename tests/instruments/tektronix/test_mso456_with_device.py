@@ -5,7 +5,8 @@ An MSO58 is driven through :class:`TektronixMSO58`, every other model through th
 The tests use values valid on every model and drive CH1 only, which should carry a repetitive
 signal with edges, such as the 1 kHz pulse on the bench; the tests that need a trigger skip when
 the edge trigger at the midpoint of CH1 does not fire. The vertical settings are never changed,
-except the bandwidth limit of CH1; it and the horizontal settings are set back after each test.
+except the bandwidth limit of CH1 and, in the cursor tests, its scale, position, offset and
+display state; they and the horizontal settings are set back after each test.
 The setup is saved to a file in ``C:/pilgrim_test`` first and recalled when the module finishes,
 which restores the measurements and the results table the tests delete and add; the file and the
 directory are deleted again. The response header and verbosity states every connection sets are
@@ -22,7 +23,12 @@ import pytest
 from pymeasure.adapters import VISAAdapter
 from pyvisa.resources import MessageBasedResource
 
-from pilgrim.instruments import TektronixMSO58, TektronixMSO456, TektronixMSO456Measurement
+from pilgrim.instruments import (
+    TektronixMSO58,
+    TektronixMSO456,
+    TektronixMSO456Cursor,
+    TektronixMSO456Measurement,
+)
 
 MODEL_PATTERN = re.compile(r"TEKTRONIX,(MSO[456]\d\w*|LPD64)")
 # The models with eight analog channels, which the driver represents with their own class.
@@ -69,6 +75,15 @@ LOW_BANDWIDTH = 20e6
 OFF_STEP_BANDWIDTH = 30e6
 # A bandwidth far above the maximum of every model, which the instrument clamps.
 HUGE_BANDWIDTH = 1e12
+# Vertical settings of CH1 for the cursor band tests, which show -2.5 V to 2.5 V on screen.
+BAND_SCALE, BAND_POSITION, BAND_OFFSET = 0.5, 0.0, 0.0
+# The target and tolerance of the cursor band tests, and the levels they put the cursors at.
+BAND_TARGET, BAND_PERCENT = 1.8, 5.0
+BAND_LEVELS = (1.71, 1.89)
+# A tolerance whose band does not fit the screen at BAND_SCALE.
+WIDE_PERCENT = 50.0
+# The instrument reads levels back with a few significant digits, e.g. 1.710 or 249.000E-3.
+LEVEL_TOLERANCE = 1e-3
 # The measurement types the transient procedure needs.
 TRANSIENT_TYPES = ["MEAN", "MINIMUM", "MAXIMUM", "TOP", "BASE", "PK2PK", "RISETIME", "FALLTIME"]
 PERCENT_LEVELS = [
@@ -870,3 +885,164 @@ def test_delete_file_of_missing_path_raises(mso, scratch_directory):
     path = f"{scratch_directory}/pilgrim_missing.png"
     with pytest.raises(ValueError, match=re.escape(f"rejected deleting {path}: 256")):
         mso.delete_file(path)
+
+
+@pytest.fixture
+def cursor(mso, keep) -> TektronixMSO456Cursor:
+    """Record the cursor settings and the display state of CH1 and set them back after the test.
+
+    CH1 is recorded first, so it is set back last and the cursor sources, which may name it,
+    are restored while it is still shown.
+
+    :param mso: The connected instrument.
+    :param keep: The restoring recorder.
+    :returns: The cursor pair.
+    """
+    keep(mso.ch1, "display_enabled")
+    keep(mso.cursor, "enabled", "function", "mode", "split_mode", "source_a", "source_b")
+    return mso.cursor
+
+
+@pytest.fixture
+def band_vertical(mso, keep):
+    """Set the vertical settings of CH1 to those of the band tests and set them back after.
+
+    :param mso: The connected instrument.
+    :param keep: The restoring recorder.
+    """
+    keep(mso.ch1, "scale", "position", "offset")
+    mso.ch1.scale = BAND_SCALE
+    mso.ch1.position = BAND_POSITION
+    mso.ch1.offset = BAND_OFFSET
+
+
+def show_cursors_on_ch1(mso: TektronixMSO456) -> None:
+    """Show the horizontal bar cursors on CH1 through the properties, not ``set_levels``.
+
+    :param mso: The connected instrument.
+    """
+    mso.ch1.display_enabled = True
+    mso.cursor.split_mode = "SAME"
+    mso.cursor.source_a = "CH1"
+    mso.cursor.function = "HBARS"
+    mso.cursor.enabled = True
+
+
+def test_vertical_settings_round_trip_and_set_the_screen_range(mso, keep):
+    keep(mso.ch1, "scale", "position", "offset")
+    mso.ch1.scale = 0.2
+    mso.ch1.position = -2.0
+    mso.ch1.offset = 0.1
+    assert mso.ch1.scale == pytest.approx(0.2)
+    assert mso.ch1.position == pytest.approx(-2.0)
+    assert mso.ch1.offset == pytest.approx(0.1)
+    # The offset is shown 2 divisions below the center, so 3 divisions above the bottom.
+    assert mso.ch1.screen_range == pytest.approx((-0.5, 1.5))
+
+
+@pytest.mark.parametrize(
+    ("prop", "values"),
+    [
+        ("function", ["VBARS", "SCREEN", "WAVEFORM", "HBARS"]),
+        ("mode", ["TRACK", "INDEPENDENT"]),
+        ("split_mode", ["SPLIT", "SAME"]),
+        ("enabled", [True, False]),
+    ],
+)
+def test_cursor_setting_round_trips(cursor, prop, values):
+    for value in values:
+        setattr(cursor, prop, value)
+        assert getattr(cursor, prop) == value
+
+
+def test_cursor_source_needs_the_channel_in_the_waveform_view(mso, cursor):
+    mso.ch1.display_enabled = False
+    with pytest.raises(ValueError, match="141"):
+        cursor.source_a = "CH1"
+    mso.ch1.display_enabled = True
+    cursor.split_mode = "SAME"
+    cursor.source_a = "CH1"
+    assert cursor.source_a == "CH1"
+    assert cursor.source_b == "CH1"  # Follows cursor A while the sources are the same.
+
+
+def test_split_sources_differ_and_same_copies_source_a(mso, cursor):
+    mso.ch1.display_enabled = True
+    cursor.split_mode = "SPLIT"
+    cursor.source_a = "CH1"
+    cursor.source_b = "AUTO"
+    assert cursor.source_a == "CH1"
+    assert cursor.source_b == "AUTO"
+    cursor.split_mode = "SAME"
+    assert cursor.source_b == "CH1"
+
+
+def test_hiding_the_source_channel_reverts_the_sources_to_auto(mso, cursor):
+    mso.ch1.display_enabled = True
+    cursor.split_mode = "SAME"
+    cursor.source_a = "CH1"
+    mso.ch1.display_enabled = False
+    assert cursor.source_a == "AUTO"
+    assert cursor.source_b == "AUTO"
+    assert mso.check_errors() == []
+
+
+def test_levels_round_trip_and_clamp_to_the_screen_range(mso, cursor):
+    show_cursors_on_ch1(mso)
+    bottom, top = mso.ch1.screen_range
+    quarter = (top - bottom) / 4
+    cursor.level_a = bottom + quarter
+    cursor.level_b = top - quarter
+    assert cursor.level_a == pytest.approx(bottom + quarter, rel=LEVEL_TOLERANCE)
+    assert cursor.level_b == pytest.approx(top - quarter, rel=LEVEL_TOLERANCE)
+    assert cursor.level_delta == pytest.approx(2 * quarter, rel=LEVEL_TOLERANCE)
+    cursor.level_a = top + mso.ch1.scale
+    cursor.level_b = bottom - mso.ch1.scale
+    assert cursor.level_a == pytest.approx(top, rel=LEVEL_TOLERANCE)
+    assert cursor.level_b == pytest.approx(bottom, rel=LEVEL_TOLERANCE)
+    assert mso.check_errors() == []
+
+
+def test_level_delta_is_the_distance_whichever_cursor_is_higher(mso, cursor):
+    show_cursors_on_ch1(mso)
+    bottom, top = mso.ch1.screen_range
+    quarter = (top - bottom) / 4
+    cursor.level_a = top - quarter
+    cursor.level_b = bottom + quarter
+    assert cursor.level_delta == pytest.approx(2 * quarter, rel=LEVEL_TOLERANCE)
+
+
+def test_hiding_the_cursors_reverts_the_function_to_waveform(mso, cursor):
+    show_cursors_on_ch1(mso)
+    bottom, top = mso.ch1.screen_range
+    middle = (bottom + top) / 2
+    cursor.level_a = middle
+    cursor.enabled = False
+    assert cursor.function == "WAVEFORM"
+    # Selecting the horizontal bars again makes the levels available once more.
+    cursor.enabled = True
+    cursor.function = "HBARS"
+    cursor.level_a = middle
+    assert cursor.level_a == pytest.approx(middle, rel=LEVEL_TOLERANCE)
+    assert mso.check_errors() == []
+
+
+def test_set_level_band_shows_the_cursors_around_the_target(mso, cursor, band_vertical):
+    mso.ch1.display_enabled = False
+    assert cursor.set_level_band(mso.ch1, BAND_TARGET, BAND_PERCENT) == pytest.approx(BAND_LEVELS)
+    assert mso.ch1.display_enabled is True
+    assert cursor.enabled is True
+    assert cursor.function == "HBARS"
+    assert cursor.source_a == "CH1"
+    assert cursor.source_b == "CH1"
+    assert cursor.level_a == pytest.approx(BAND_LEVELS[0], rel=LEVEL_TOLERANCE)
+    assert cursor.level_b == pytest.approx(BAND_LEVELS[1], rel=LEVEL_TOLERANCE)
+    assert cursor.level_delta == pytest.approx(BAND_LEVELS[1] - BAND_LEVELS[0], rel=LEVEL_TOLERANCE)
+    assert mso.check_errors() == []
+
+
+def test_set_level_band_raises_when_the_band_does_not_fit_the_screen(mso, cursor, band_vertical):
+    cursor.enabled = False
+    with pytest.raises(ValueError, match="outside the screen range of CH1"):
+        cursor.set_level_band(mso.ch1, BAND_TARGET, WIDE_PERCENT)
+    assert cursor.enabled is False

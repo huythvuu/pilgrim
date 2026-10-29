@@ -15,6 +15,7 @@ from pilgrim.instruments import (
     TektronixMSO58,
     TektronixMSO456,
     TektronixMSO456Channel,
+    TektronixMSO456Cursor,
     TektronixMSO456Measurement,
 )
 
@@ -1015,3 +1016,343 @@ def test_file_method_rejects_invalid_path_without_writing(method, path):
         pytest.raises(ValueError, match="non-empty string without double quotes"),
     ):
         getattr(mso, method)(path)
+
+
+CURSOR = "DISplay:WAVEView1:CURSor:CURSOR1"
+# The vertical settings of CH1 in the band tests: 0.5 V/div with 0 V in the center, so the
+# screen spans -2.5 V to 2.5 V.
+CH1_VERTICAL = [
+    ("CH1:SCAle?", "500.0000E-3"),
+    ("CH1:POSition?", "0.0E+0"),
+    ("CH1:OFFSet?", "0.0E+0"),
+]
+# The commands set_levels sends on CH1 once the levels fit, before the levels themselves.
+CURSOR_SETUP_ON_CH1 = [
+    (f"{CURSOR}:SPLITMODE SAME", None),
+    *NO_EVENT,
+    (f"{CURSOR}:ASOUrce CH1", None),
+    *NO_EVENT,
+    (f"{CURSOR}:FUNCtion HBARS", None),
+    *NO_EVENT,
+    (f"{CURSOR}:STATE 1", None),
+    *NO_EVENT,
+]
+
+
+def levels(level_a: str, level_b: str) -> list[tuple[str, str | None]]:
+    """Build the protocol of the two level writes of set_levels.
+
+    :param level_a: The formatted level of cursor A.
+    :param level_b: The formatted level of cursor B.
+    :returns: The command and reply pairs for ``expected_protocol``.
+    """
+    return [
+        (f"{CURSOR}:HBArs:APOSition {level_a}", None),
+        *NO_EVENT,
+        (f"{CURSOR}:HBArs:BPOSition {level_b}", None),
+        *NO_EVENT,
+    ]
+
+
+def test_cursor_is_kept_apart_from_the_analog_channels():
+    with expected_protocol(TektronixMSO456, CONNECT) as mso:
+        assert isinstance(mso.cursor, TektronixMSO456Cursor)
+        assert mso.cursor.parent is mso
+        assert mso.cursors == {1: mso.cursor}
+        assert mso.channels[1] is mso.ch1
+
+
+@pytest.mark.parametrize(
+    ("channel", "prop", "value", "command"),
+    [
+        ("ch1", "scale", 0.5, "CH1:SCAle 0.5"),
+        ("ch4", "scale", 1.23456789123e-3, "CH4:SCAle 0.00123456789123"),
+        ("ch1", "position", -3.26, "CH1:POSition -3.26"),
+        ("ch4", "position", 0, "CH4:POSition 0"),
+        ("ch1", "offset", 2e-3, "CH1:OFFSet 0.002"),
+        ("ch4", "offset", -1.5, "CH4:OFFSet -1.5"),
+    ],
+)
+def test_vertical_setter_writes_command_then_checks_errors(channel, prop, value, command):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+        setattr(getattr(mso, channel), prop, value)
+
+
+@pytest.mark.parametrize(
+    ("channel", "prop", "command", "reply", "value"),
+    [
+        ("ch1", "scale", "CH1:SCAle?", "500.0000E-3", 0.5),
+        ("ch4", "scale", "CH4:SCAle?", "50.0000E-3", 0.05),
+        ("ch1", "position", "CH1:POSition?", "-3.2600", -3.26),
+        ("ch4", "position", "CH4:POSition?", "20.0000E-3", 0.02),
+        ("ch1", "offset", "CH1:OFFSet?", "0.0E+0", 0.0),
+        ("ch4", "offset", "CH4:OFFSet?", "1.0000E-03", 1e-3),
+    ],
+)
+def test_vertical_getter(channel, prop, command, reply, value):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, reply)]) as mso:
+        result = getattr(getattr(mso, channel), prop)
+    assert result == value
+    assert type(result) is float
+
+
+@pytest.mark.parametrize(
+    ("scale", "position", "offset", "screen_range"),
+    [
+        # CH1 and CH5 of the bench, whose cursor levels clipped at exactly these limits.
+        ("500.0000E-3", "-3.2600", "0.0E+0", (-0.87, 4.13)),
+        ("50.0000E-3", "20.0000E-3", "0.0E+0", (-0.251, 0.249)),
+        ("1.0E+0", "0.0E+0", "2.0E+0", (-3.0, 7.0)),
+        ("200.0000E-3", "2.5000", "-1.0E+0", (-2.5, -0.5)),
+    ],
+)
+def test_screen_range_follows_scale_position_and_offset(scale, position, offset, screen_range):
+    protocol = [
+        *CONNECT,
+        ("CH4:SCAle?", scale),
+        ("CH4:POSition?", position),
+        ("CH4:OFFSet?", offset),
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        assert mso.ch4.screen_range == pytest.approx(screen_range)
+
+
+@pytest.mark.parametrize(
+    ("prop", "value", "command"),
+    [
+        ("enabled", True, f"{CURSOR}:STATE 1"),
+        ("enabled", False, f"{CURSOR}:STATE 0"),
+        ("function", "HBARS", f"{CURSOR}:FUNCtion HBARS"),
+        ("function", "VBARS", f"{CURSOR}:FUNCtion VBARS"),
+        ("function", "SCREEN", f"{CURSOR}:FUNCtion SCREEN"),
+        ("function", "WAVEFORM", f"{CURSOR}:FUNCtion WAVEFORM"),
+        ("source_a", "AUTO", f"{CURSOR}:ASOUrce AUTO"),
+        ("source_a", "CH1", f"{CURSOR}:ASOUrce CH1"),
+        ("source_a", "CH4", f"{CURSOR}:ASOUrce CH4"),
+        ("source_a", "MATH2", f"{CURSOR}:ASOUrce MATH2"),
+        ("source_b", "AUTO", f"{CURSOR}:BSOUrce AUTO"),
+        ("source_b", "CH3", f"{CURSOR}:BSOUrce CH3"),
+        ("source_b", "REF1", f"{CURSOR}:BSOUrce REF1"),
+        ("source_b", "BUS12", f"{CURSOR}:BSOUrce BUS12"),
+        ("source_b", "PLOT1", f"{CURSOR}:BSOUrce PLOT1"),
+        ("split_mode", "SAME", f"{CURSOR}:SPLITMODE SAME"),
+        ("split_mode", "SPLIT", f"{CURSOR}:SPLITMODE SPLIT"),
+        ("mode", "INDEPENDENT", f"{CURSOR}:MODe INDEPENDENT"),
+        ("mode", "TRACK", f"{CURSOR}:MODe TRACK"),
+        ("level_a", 1.71, f"{CURSOR}:HBArs:APOSition 1.71"),
+        ("level_a", 1.23456789123e-3, f"{CURSOR}:HBArs:APOSition 0.00123456789123"),
+        ("level_b", -0.25, f"{CURSOR}:HBArs:BPOSition -0.25"),
+        ("level_b", 0, f"{CURSOR}:HBArs:BPOSition 0"),
+    ],
+)
+def test_cursor_setter_writes_command_then_checks_errors(prop, value, command):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *NO_EVENT]) as mso:
+        setattr(mso.cursor, prop, value)
+
+
+@pytest.mark.parametrize(
+    ("prop", "command", "reply", "value"),
+    [
+        ("enabled", f"{CURSOR}:STATE?", "1", True),
+        ("enabled", f"{CURSOR}:STATE?", "0", False),
+        ("enabled", f"{CURSOR}:STATE?", "ON", True),
+        ("enabled", f"{CURSOR}:STATE?", "OFF", False),
+        ("function", f"{CURSOR}:FUNCtion?", "HBARS", "HBARS"),
+        ("function", f"{CURSOR}:FUNCtion?", "WAVEFORM", "WAVEFORM"),
+        ("source_a", f"{CURSOR}:ASOUrce?", "AUTO", "AUTO"),
+        ("source_a", f"{CURSOR}:ASOUrce?", "CH1", "CH1"),
+        ("source_b", f"{CURSOR}:BSOUrce?", "CH5", "CH5"),
+        ("source_b", f"{CURSOR}:BSOUrce?", "REF1", "REF1"),
+        ("split_mode", f"{CURSOR}:SPLITMODE?", "SAME", "SAME"),
+        ("mode", f"{CURSOR}:MODe?", "INDEPENDENT", "INDEPENDENT"),
+        ("level_a", f"{CURSOR}:HBArs:APOSition?", "1.710", 1.71),
+        ("level_a", f"{CURSOR}:HBArs:APOSition?", "-870.00E-3", -0.87),
+        ("level_b", f"{CURSOR}:HBArs:BPOSition?", "249.000E-3", 0.249),
+        ("level_delta", f"{CURSOR}:HBArs:DELTa?", "180.00E-3", 0.18),
+        ("level_delta", f"{CURSOR}:HBArs:DELTa?", "0.0E+0", 0.0),
+    ],
+)
+def test_cursor_getter(prop, command, reply, value):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, reply)]) as mso:
+        result = getattr(mso.cursor, prop)
+    assert result == value
+    assert type(result) is type(value)
+
+
+@pytest.mark.parametrize(
+    ("prop", "command"),
+    [
+        ("level_a", f"{CURSOR}:HBArs:APOSition?"),
+        ("level_b", f"{CURSOR}:HBArs:BPOSition?"),
+        ("level_delta", f"{CURSOR}:HBArs:DELTa?"),
+    ],
+)
+def test_cursor_level_without_a_value_reads_as_nan(prop, command):
+    with expected_protocol(TektronixMSO456, [*CONNECT, (command, "9.91E+37")]) as mso:
+        assert math.isnan(getattr(mso.cursor, prop))
+
+
+@pytest.mark.parametrize(
+    ("prop", "value"),
+    [
+        ("enabled", "ON"),
+        ("enabled", 2),
+        ("function", "HBArs"),
+        ("function", "OFF"),
+        ("source_a", "CH5"),
+        ("source_a", "CH0"),
+        ("source_a", "ch1"),
+        ("source_a", "MATH0"),
+        ("source_a", "LINE"),
+        ("source_b", "CH5"),
+        ("source_b", "REF"),
+        ("source_b", "PLOT01"),
+        ("split_mode", "BOTH"),
+        ("mode", "LOCKED"),
+    ],
+)
+def test_cursor_invalid_value_raises_without_writing(prop, value):
+    with expected_protocol(TektronixMSO456, CONNECT) as mso, pytest.raises(ValueError):
+        setattr(mso.cursor, prop, value)
+
+
+def test_mso58_cursor_source_accepts_its_eight_channels():
+    protocol = [*CONNECT, (f"{CURSOR}:ASOUrce CH8", None), *NO_EVENT]
+    with expected_protocol(TektronixMSO58, protocol) as mso:
+        mso.cursor.source_a = "CH8"
+
+
+def test_mso58_cursor_source_rejects_a_ninth_channel_without_writing():
+    with expected_protocol(TektronixMSO58, CONNECT) as mso, pytest.raises(ValueError):
+        mso.cursor.source_b = "CH9"
+
+
+def test_cursor_source_setter_raises_when_instrument_rejects_hidden_channel():
+    command = f"{CURSOR}:ASOUrce CH1"
+    reply = f'141,"Invalid character data; Invalid enumeration; {CURSOR}:ASOUrce CH1\\n"'
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (command, None), *events(reply)]) as mso,
+        pytest.raises(ValueError, match="rejected the setting: 141, Invalid character data"),
+    ):
+        mso.cursor.source_a = "CH1"
+
+
+def test_set_levels_shows_hidden_channel_then_sets_cursors_up_and_writes_levels():
+    protocol = [
+        *CONNECT,
+        *CH1_VERTICAL,
+        ("DISplay:WAVEView1:CH1:STATE?", "0"),
+        ("DISplay:WAVEView1:CH1:STATE 1", None),
+        *NO_EVENT,
+        *CURSOR_SETUP_ON_CH1,
+        *levels("1.71", "1.89"),
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.cursor.set_levels(mso.ch1, 1.71, 1.89)
+
+
+def test_set_levels_keeps_a_shown_channel_as_it_is():
+    protocol = [
+        *CONNECT,
+        *CH1_VERTICAL,
+        ("DISplay:WAVEView1:CH1:STATE?", "1"),
+        *CURSOR_SETUP_ON_CH1,
+        *levels("-2.5", "2.5"),
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        mso.cursor.set_levels(mso.ch1, -2.5, 2.5)  # The screen edges are still on screen.
+
+
+def test_mso58_set_levels_on_its_eighth_channel():
+    protocol = [
+        *CONNECT,
+        ("CH8:SCAle?", "1.0E+0"),
+        ("CH8:POSition?", "0.0E+0"),
+        ("CH8:OFFSet?", "2.0E+0"),
+        ("DISplay:WAVEView1:CH8:STATE?", "1"),
+        (f"{CURSOR}:SPLITMODE SAME", None),
+        *NO_EVENT,
+        (f"{CURSOR}:ASOUrce CH8", None),
+        *NO_EVENT,
+        (f"{CURSOR}:FUNCtion HBARS", None),
+        *NO_EVENT,
+        (f"{CURSOR}:STATE 1", None),
+        *NO_EVENT,
+        *levels("6.5", "-2.5"),
+    ]
+    with expected_protocol(TektronixMSO58, protocol) as mso:
+        mso.cursor.set_levels(mso.ch8, 6.5, -2.5)
+
+
+@pytest.mark.parametrize(
+    ("level_a", "level_b", "level"),
+    [(2.6, 1.0, 2.6), (1.0, -2.51, -2.51), (-3.0, 3.0, -3.0), (0.0, math.nan, math.nan)],
+)
+def test_set_levels_rejects_level_outside_screen_range_without_sending(level_a, level_b, level):
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, *CH1_VERTICAL]) as mso,
+        pytest.raises(
+            ValueError, match=f"Level {level} V is outside the screen range of CH1, -2.5 V to 2.5 V"
+        ),
+    ):
+        mso.cursor.set_levels(mso.ch1, level_a, level_b)
+
+
+def test_set_levels_raises_when_a_vertical_setting_is_not_a_number():
+    protocol = [*CONNECT, ("CH1:SCAle?", "FULL")]
+    with (
+        expected_protocol(TektronixMSO456, protocol) as mso,
+        pytest.raises(TypeError, match="Vertical scale must be a number, not 'FULL'"),
+    ):
+        mso.cursor.set_levels(mso.ch1, 0.0, 0.0)
+
+
+def test_set_level_band_puts_the_cursors_around_the_target():
+    protocol = [
+        *CONNECT,
+        *CH1_VERTICAL,
+        ("DISplay:WAVEView1:CH1:STATE?", "1"),
+        *CURSOR_SETUP_ON_CH1,
+        *levels("1.71", "1.89"),
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        assert mso.cursor.set_level_band(mso.ch1, 1.8, 5) == pytest.approx((1.71, 1.89))
+
+
+@pytest.mark.parametrize(
+    ("target", "percent", "level_a", "level_b"),
+    [
+        (1.8, 0, "1.8", "1.8"),
+        (-1.8, 5, "-1.71", "-1.89"),
+        (0.0, 10, "0", "0"),
+        (2.0, 25, "1.5", "2.5"),
+    ],
+)
+def test_set_level_band_scales_the_band_with_the_target(target, percent, level_a, level_b):
+    protocol = [
+        *CONNECT,
+        *CH1_VERTICAL,
+        ("DISplay:WAVEView1:CH1:STATE?", "1"),
+        *CURSOR_SETUP_ON_CH1,
+        *levels(level_a, level_b),
+    ]
+    with expected_protocol(TektronixMSO456, protocol) as mso:
+        result = mso.cursor.set_level_band(mso.ch1, target, percent)
+    assert result == pytest.approx((float(level_a), float(level_b)))
+
+
+@pytest.mark.parametrize("percent", [-0.1, -5])
+def test_set_level_band_rejects_negative_percent_without_sending(percent):
+    with (
+        expected_protocol(TektronixMSO456, CONNECT) as mso,
+        pytest.raises(ValueError, match="Percentage must be 0 or more"),
+    ):
+        mso.cursor.set_level_band(mso.ch1, 1.8, percent)
+
+
+def test_set_level_band_rejects_a_band_outside_the_screen_without_sending():
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, *CH1_VERTICAL]) as mso,
+        pytest.raises(ValueError, match="outside the screen range of CH1"),
+    ):
+        mso.cursor.set_level_band(mso.ch1, 1.8, 50)  # Cursor B would be at 2.7 V.

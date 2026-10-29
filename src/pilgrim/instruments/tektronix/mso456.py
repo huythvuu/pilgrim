@@ -45,11 +45,31 @@ def _boolean_reply(reply: str) -> str:
 INVALID_RESULT = 9.91e37
 # A measurement can take a math or reference waveform as its source; their number is not fixed.
 _WAVEFORM_SOURCE = re.compile(r"(MATH|REF)[1-9]\d*")
+# A cursor can also take a bus or a plot as its source.
+_CURSOR_WAVEFORM_SOURCE = re.compile(r"(MATH|REF|BUS|PLOT)[1-9]\d*")
+# The waveform view is this many divisions tall, so a channel's screen spans this many times its
+# vertical scale (bench: cursor levels clip at position +-5 divisions).
+SCREEN_DIVISIONS = 10
+# The cursor source that follows the waveform selected on the instrument.
+AUTO_SOURCE = "AUTO"
 
 
 def _nan_if_invalid(value: float) -> float:
     """Translate the instrument's invalid-result value to NaN."""
     return math.nan if value >= INVALID_RESULT else value
+
+
+def _number(value: object, name: str) -> float:
+    """Return a value read from the instrument as a float.
+
+    :param value: The value read.
+    :param name: What the value is, for the error message.
+    :returns: The value.
+    :raises TypeError: If the reply is anything but a number.
+    """
+    if not isinstance(value, int | float):
+        raise TypeError(f"{name} must be a number, not {value!r}.")
+    return float(value)
 
 
 def _strip_quotes(reply: str) -> str:
@@ -109,6 +129,25 @@ def _measurement_source(value: str, values: Sequence[str]) -> str:
     if value in values or (isinstance(value, str) and _WAVEFORM_SOURCE.fullmatch(value)):
         return value
     raise ValueError(f"Value of {value} is not in {list(values)} or of the form MATH<n> or REF<n>")
+
+
+def _cursor_source(value: str, values: Sequence[str]) -> str:
+    """Validate a cursor source: AUTO, an analog channel in ``values`` or any MATH<n>, REF<n>,
+    BUS<n> or PLOT<n>.
+
+    :param value: The source to validate.
+    :param values: The analog channels of the instrument, e.g. ``["CH1", "CH2"]``.
+    :returns: ``value`` unchanged.
+    :raises ValueError: If the value is none of these.
+    """
+    if value == AUTO_SOURCE or value in values:
+        return value
+    if isinstance(value, str) and _CURSOR_WAVEFORM_SOURCE.fullmatch(value):
+        return value
+    raise ValueError(
+        f"Value of {value} is not AUTO, in {list(values)} or of the form MATH<n>, REF<n>, BUS<n> "
+        "or PLOT<n>"
+    )
 
 
 # The keyword that removes the bandwidth limit of a channel.
@@ -248,6 +287,57 @@ class TektronixMSO456Channel(Channel):
         values=[FULL_BANDWIDTH],
         check_set_errors=True,
     )
+
+    scale = Channel.control(
+        "CH{ch}:SCAle?",
+        "CH{ch}:SCAle %.12g",
+        """Control the vertical scale in volts per division (float).
+
+        The waveform view is 10 divisions tall, so the channel's screen spans ten times the
+        scale; ``screen_range`` gives its limits. The manual gives no range; the limits depend
+        on the model and the attached probe.
+        """,
+        check_set_errors=True,
+    )
+
+    position = Channel.control(
+        "CH{ch}:POSition?",
+        "CH{ch}:POSition %.12g",
+        """Control the vertical position in divisions (float).
+
+        The position of the ``offset`` voltage from the center of the waveform view: 0 shows it
+        in the center, positive values move it up, and 5 is the top edge.
+        """,
+        check_set_errors=True,
+    )
+
+    offset = Channel.control(
+        "CH{ch}:OFFSet?",
+        "CH{ch}:OFFSet %.12g",
+        """Control the vertical offset in volts (float).
+
+        The voltage shown at ``position``, so raising the offset shifts the waveform down.
+        """,
+        check_set_errors=True,
+    )
+
+    @property
+    def screen_range(self) -> tuple[float, float]:
+        """Get the lowest and highest voltage shown in the waveform view (tuple of two floats).
+
+        Derived from ``scale``, ``position`` and ``offset``: the view is 10 divisions tall,
+        ``position`` moves the ``offset`` voltage that many divisions from its center, and each
+        division spans ``scale`` volts. The instrument clips a cursor level outside the range to
+        its edge.
+        """
+        scale = _number(self.scale, "Vertical scale")
+        position = _number(self.position, "Vertical position")
+        offset = _number(self.offset, "Vertical offset")
+        half_screen = SCREEN_DIVISIONS / 2
+        return (
+            offset - (half_screen + position) * scale,
+            offset + (half_screen - position) * scale,
+        )
 
 
 class TektronixMSO456Measurement(Channel):
@@ -529,13 +619,232 @@ class TektronixMSO456Measurement(Channel):
     )
 
 
+class TektronixMSO456Cursor(Channel):
+    """Represent the pair of cursors, A and B, of the Tektronix MSO4/5/6 series oscilloscopes.
+
+    The instrument has one pair of cursors in its waveform view, available as ``cursor`` on the
+    instrument. Only the horizontal bar cursors, which mark two voltage levels, are configurable
+    through this driver: :meth:`set_levels` sets them on a channel, and :meth:`set_level_band`
+    puts them a percentage below and above a target voltage. A source must be shown in the
+    waveform view, and removing a source from the view reverts both sources to AUTO without
+    reporting an error.
+    """
+
+    # Required by PyMeasure's Child protocol, which ChannelCreator is typed against.
+    _name: str
+    _protected: bool
+    _collection: str
+    # Set by the instrument to its analog channels.
+    source_a_values: list[str]
+    source_b_values: list[str]
+
+    def insert_id(self, command: str) -> str:
+        """Prepend the command prefix, which names the waveform view and the cursor pair.
+
+        :param command: The command without its prefix, e.g. ``"STATE?"``.
+        :returns: The full command.
+        """
+        return f"DISplay:WAVEView1:CURSor:CURSOR{self.id}:{command}"
+
+    enabled = Channel.control(
+        "STATE?",
+        "STATE %d",
+        """Control whether the cursors are shown (bool).
+
+        Hiding the cursors reverts ``function`` to WAVEFORM, so the horizontal bar levels are
+        not available until HBARS is selected again, which :meth:`set_levels` does.
+        """,
+        validator=strict_discrete_set,
+        map_values=True,
+        values={True: 1, False: 0},
+        preprocess_reply=_boolean_reply,
+        check_set_errors=True,
+    )
+
+    function = Channel.control(
+        "FUNCtion?",
+        "FUNCtion %s",
+        """Control the cursor type (str strictly in HBARS, VBARS, SCREEN, WAVEFORM).
+
+        HBARS are horizontal bars that mark two levels in the vertical units of the source, set
+        with ``level_a`` and ``level_b``. VBARS are vertical bars that mark two times, SCREEN
+        combines both, and WAVEFORM ties each cursor to a point of its source waveform; their
+        positions are not configurable through this driver.
+        """,
+        validator=strict_discrete_set,
+        values=["HBARS", "VBARS", "SCREEN", "WAVEFORM"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    source_a = Channel.control(
+        "ASOUrce?",
+        "ASOUrce %s",
+        """Control the waveform cursor A measures (str strictly in AUTO, CH1 to CH<n>, MATH<n>,
+        REF<n>, BUS<n>, PLOT<n>).
+
+        AUTO follows the waveform selected on the instrument. The analog channels are those of
+        the model, CH1 to CH4 on every model and up to CH8 on the MSO58, and a channel is only
+        accepted while it is shown in the waveform view (``display_enabled``); the instrument
+        rejects a hidden one with event 141. A math, reference, bus or plot waveform must exist
+        on the instrument, which this driver cannot check. While ``split_mode`` is SAME, setting
+        this sets ``source_b`` as well.
+        """,
+        validator=_cursor_source,
+        values=["CH1", "CH2", "CH3", "CH4"],
+        check_set_errors=True,
+        cast=str,
+        dynamic=True,
+    )
+
+    source_b = Channel.control(
+        "BSOUrce?",
+        "BSOUrce %s",
+        """Control the waveform cursor B measures (str strictly in AUTO, CH1 to CH<n>, MATH<n>,
+        REF<n>, BUS<n>, PLOT<n>).
+
+        Takes the same values as ``source_a`` under the same conditions. Applies while
+        ``split_mode`` is SPLIT; while it is SAME, the instrument keeps it equal to
+        ``source_a``.
+        """,
+        validator=_cursor_source,
+        values=["CH1", "CH2", "CH3", "CH4"],
+        check_set_errors=True,
+        cast=str,
+        dynamic=True,
+    )
+
+    split_mode = Channel.control(
+        "SPLITMODE?",
+        "SPLITMODE %s",
+        """Control whether the two cursors measure the same waveform or different ones (str
+        strictly in SAME, SPLIT).
+
+        Selecting SAME sets ``source_b`` to ``source_a``.
+        """,
+        validator=strict_discrete_set,
+        values=["SAME", "SPLIT"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    mode = Channel.control(
+        "MODe?",
+        "MODe %s",
+        """Control whether the cursors move together on the instrument (str strictly in
+        INDEPENDENT, TRACK).
+
+        TRACK moves cursor B along when cursor A is moved from the instrument's user interface;
+        cursor B still moves on its own. INDEPENDENT moves each cursor on its own.
+        """,
+        validator=strict_discrete_set,
+        values=["INDEPENDENT", "TRACK"],
+        check_set_errors=True,
+        cast=str,
+    )
+
+    level_a = Channel.control(
+        "HBArs:APOSition?",
+        "HBArs:APOSition %.12g",
+        """Control the level of horizontal bar cursor A in the vertical units of ``source_a``,
+        volts for an analog channel (float, NaN if not available).
+
+        Applies while ``function`` is HBARS; for another type, which hiding the cursors reverts
+        to, it reads as NaN and a write is ignored. The instrument clamps a level outside the
+        ``screen_range`` of the source silently, without reporting an error, so read the
+        property back to learn the level that applies, or use :meth:`set_levels`, which checks
+        the range first.
+        """,
+        get_process=_nan_if_invalid,
+        check_set_errors=True,
+    )
+
+    level_b = Channel.control(
+        "HBArs:BPOSition?",
+        "HBArs:BPOSition %.12g",
+        """Control the level of horizontal bar cursor B in the vertical units of ``source_b``,
+        volts for an analog channel (float, NaN if not available).
+
+        Applies and clamps like ``level_a``.
+        """,
+        get_process=_nan_if_invalid,
+        check_set_errors=True,
+    )
+
+    level_delta = Channel.measurement(
+        "HBArs:DELTa?",
+        """Measure the distance between the levels of the horizontal bar cursors (float, 0 or
+        more, NaN if not available).
+
+        The absolute difference, so it does not tell which cursor is higher.
+        """,
+        get_process=_nan_if_invalid,
+    )
+
+    def set_levels(self, channel: TektronixMSO456Channel, level_a: float, level_b: float) -> None:
+        """Show the horizontal bar cursors on an analog channel at two levels.
+
+        Adds the channel to the waveform view if it is hidden, puts both cursors on it, selects
+        the HBARS cursor type and shows the cursors. Nothing is sent when a level lies outside
+        the channel's ``screen_range``, since the instrument would clip it silently; change the
+        channel's ``scale``, ``position`` or ``offset`` first.
+
+        :param channel: The analog channel to measure, e.g. ``ch1``.
+        :param level_a: The level of cursor A in volts.
+        :param level_b: The level of cursor B in volts.
+        :raises ValueError: If a level lies outside the channel's screen range.
+        """
+        bottom, top = channel.screen_range
+        for level in (level_a, level_b):
+            if not bottom <= level <= top:
+                raise ValueError(
+                    f"Level {level} V is outside the screen range of CH{channel.id}, {bottom} V "
+                    f"to {top} V; change its scale, position or offset first."
+                )
+        if not channel.display_enabled:
+            channel.display_enabled = True
+        self.split_mode = "SAME"
+        self.source_a = f"CH{channel.id}"
+        self.function = "HBARS"
+        self.enabled = True
+        self.level_a = level_a
+        self.level_b = level_b
+
+    def set_level_band(
+        self, channel: TektronixMSO456Channel, target: float, percent: float
+    ) -> tuple[float, float]:
+        """Show the horizontal bar cursors on an analog channel a percentage below and above a
+        target level.
+
+        Cursor A is put at ``target * (1 - percent / 100)`` and cursor B at
+        ``target * (1 + percent / 100)``, e.g. at 1.71 V and 1.89 V for a 1.8 V target with 5
+        percent, with :meth:`set_levels`, which also sets the cursors up and checks that the
+        levels fit the channel's ``screen_range``.
+
+        :param channel: The analog channel to measure, e.g. ``ch1``.
+        :param target: The target level in volts.
+        :param percent: The distance of each cursor from the target as a percentage of it
+            (float, 0 or more).
+        :returns: The levels of cursors A and B in volts.
+        :raises ValueError: If the percentage is negative, or a level lies outside the channel's
+            screen range.
+        """
+        if percent < 0:
+            raise ValueError(f"Percentage must be 0 or more, not {percent}.")
+        level_a = target * (1 - percent / 100)
+        level_b = target * (1 + percent / 100)
+        self.set_levels(channel, level_a, level_b)
+        return level_a, level_b
+
+
 class TektronixMSO456(SCPIMixin, Instrument):
     """Represent the Tektronix MSO4/5/6 series of mixed signal oscilloscopes.
 
     Individual models are represented by subclasses, which add the analog channels beyond
     ``ch1`` to ``ch4``. Measurements are added at runtime with :meth:`add_measurement` and
-    collected in ``measurements``. Connecting switches response headers off and verbose keywords
-    on, which persist on the instrument, and clears the event queue.
+    collected in ``measurements``, and the pair of cursors is ``cursor``. Connecting switches
+    response headers off and verbose keywords on, which persist on the instrument, and clears
+    the event queue.
     A setting the instrument rejects raises ``ValueError``, while warnings are only logged.
 
     :param adapter: VISA resource name or adapter instance.
@@ -567,6 +876,9 @@ class TektronixMSO456(SCPIMixin, Instrument):
         # The edge trigger accepts every analog channel of the model, so the set is derived from
         # the channels the class declared, which the subclasses extend.
         self.trigger_source_values = [f"CH{n}" for n in self.channels] + ["LINE", "AUXILIARY"]
+        # The cursors accept every analog channel of the model as their source.
+        self.cursor.source_a_values = [f"CH{n}" for n in self.channels]
+        self.cursor.source_b_values = [f"CH{n}" for n in self.channels]
         #: The measurements added with :meth:`add_measurement`, by number.
         self.measurements: dict[int, TektronixMSO456Measurement] = {}
 
@@ -582,6 +894,13 @@ class TektronixMSO456(SCPIMixin, Instrument):
         ch2 = Instrument.ChannelCreator(TektronixMSO456Channel, 2)
         ch3 = Instrument.ChannelCreator(TektronixMSO456Channel, 3)
         ch4 = Instrument.ChannelCreator(TektronixMSO456Channel, 4)
+
+    # The single cursor pair, kept out of ``channels`` so that collection holds the analog
+    # channels only.
+    if TYPE_CHECKING:
+        cursor: TektronixMSO456Cursor
+    else:
+        cursor = Instrument.ChannelCreator(TektronixMSO456Cursor, 1, collection="cursors")
 
     @property
     def next_error(self) -> NoReturn:
