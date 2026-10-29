@@ -73,8 +73,9 @@ def make_scope(
         asked for, in the order asked.
     :param events: Receives every clear, every acquisition start or stop as its value, every
         horizontal scale set, every bandwidth set with its channel number, every measurement
-        added with its number, every results table added with its name, and every directory
-        made and image saved with its path.
+        added with its number, every results table added with its name, every cursor pair set
+        with its channel number and its levels, and every directory made and image saved with
+        its path.
     :param directories: The directories that exist on the scope; making one adds it.
     :param kinds: The ``(type, source)`` of measurements by number, by default
         :func:`channel_kinds` of CH1; a number not listed is a PK2PK of CH1.
@@ -85,9 +86,13 @@ def make_scope(
     scope.channels = {}
     for number in range(1, 9):
         channel = MagicMock()
+        channel.id = number
         type(channel).bandwidth = recorded_setting(events, "bandwidth", number)
         scope.channels[number] = channel
     type(scope).horizontal_scale = recorded_setting(events, "horizontal_scale")
+    scope.cursor.set_levels.side_effect = lambda channel, low, high: events.append(
+        ("set_levels", channel.id, low, high)
+    )
 
     existing = set(directories)
 
@@ -178,15 +183,17 @@ def test_startup_connects_to_scope_resource(
     )
     scope_class = MagicMock(return_value=scope)
     monkeypatch.setattr(procedure_ripple, "TektronixMSO58", scope_class)
-    procedure = RippleProcedure(scope_resource="TCPIP::scope::INSTR", channel=3)
+    procedure = RippleProcedure(
+        scope_resource="TCPIP::scope::INSTR", channel=3, target=5, cursor_lo=4, cursor_hi=5
+    )
     procedure.refresh_parameters()
     with caplog.at_level(logging.INFO, logger=LOGGER):
         procedure.startup()
     scope_class.assert_called_once_with("TCPIP::scope::INSTR", timeout=10_000)
     connected = "Connected to TEKTRONIX,MSO58,C031408,CF:91.1CT FV:1.34.8, found acquiring."
     assert connected in caplog.messages
-    # The measurements and the table are added once acquisition has stopped and before the
-    # statistics clear.
+    # The measurements, the table and the cursors are added once acquisition has stopped and
+    # before the statistics clear.
     assert events == [
         ("acquisition",),
         ("acquisition", False),
@@ -195,9 +202,13 @@ def test_startup_connects_to_scope_resource(
         ("add_measurement", 3),
         ("add_measurement", 4),
         ("add_results_table", "TABLE1"),
+        ("set_levels", 3, 4.8, 5.25),
         ("clear",),
     ]
     assert "Added results table TABLE1 to the scope." in caplog.messages
+    assert "Cursors shown on CH3 at 4.8 V (target 5.0 V - 4.0 %) and 5.25 V (target + 5.0 %)." in (
+        caplog.messages
+    )
     added = [(m.id, m.type, m.source) for m in scope.measurements.values()]
     assert added == [
         (1, "MAXIMUM", "CH3"),
@@ -258,6 +269,62 @@ def test_startup_raises_other_results_table_refusals(
     with pytest.raises(ValueError, match=re.escape(message)):
         procedure.startup()
     assert ("clear",) not in events
+
+
+def test_show_cursors_puts_the_cursors_on_the_channel_about_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope([], [], events)
+    procedure = make_running_procedure(
+        monkeypatch, scope, channel=2, target=-5, cursor_lo=4, cursor_hi=5
+    )
+    # The low cursor lies below a negative target and the high one above it.
+    assert procedure.show_cursors() == (-5.2, -4.75)
+    assert events == [("set_levels", 2, -5.2, -4.75)]
+
+
+def test_show_cursors_of_the_defaults_meet_at_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope([], [], events)
+    procedure = make_running_procedure(monkeypatch, scope)
+    assert procedure.show_cursors() == (0, 0)
+    assert events == [("set_levels", 1, 0, 0)]
+
+
+def test_startup_raises_when_a_cursor_level_is_off_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope([], [], events)
+    message = "Level 5.25 V is outside the screen range of CH1, -5.0 V to 5.0 V"
+    scope.cursor.set_levels.side_effect = ValueError(message)
+    procedure = make_started_procedure(monkeypatch, scope, target=5, cursor_hi=5)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        procedure.startup()
+    assert ("clear",) not in events
+
+
+@pytest.mark.parametrize("percent", [-1, -0.5])
+def test_negative_cursor_percentages_are_rejected(percent: float) -> None:
+    with pytest.raises(ValueError, match="minimum"):
+        RippleProcedure(cursor_lo=percent).refresh_parameters()
+    with pytest.raises(ValueError, match="minimum"):
+        RippleProcedure(cursor_hi=percent).refresh_parameters()
+
+
+@pytest.mark.parametrize(
+    ("target", "below", "above", "low", "high"),
+    [
+        (5, 4, 5, 4.8, 5.25),
+        (-5, 4, 5, -5.2, -4.75),
+        (1.8, 5, 5, 1.71, 1.89),
+        (3.3, 0, 0, 3.3, 3.3),
+        (0, 10, 10, 0, 0),
+    ],
+)
+def test_cursor_levels(target: float, below: float, above: float, low: float, high: float) -> None:
+    actual_low, actual_high = procedure_ripple.cursor_levels(target, below, above)
+    assert actual_low == pytest.approx(low)
+    assert actual_high == pytest.approx(high)
 
 
 def test_add_missing_measurements_keeps_the_existing_ones(

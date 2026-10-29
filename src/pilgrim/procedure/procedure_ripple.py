@@ -14,7 +14,13 @@ from pymeasure.experiment import Procedure
 
 from pilgrim.instruments import TektronixMSO58, TektronixMSO456Measurement
 
-from .parameters import FloatListParameter, IntegerListParameter, IntegerParameter, StringParameter
+from .parameters import (
+    FloatListParameter,
+    FloatParameter,
+    IntegerListParameter,
+    IntegerParameter,
+    StringParameter,
+)
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
@@ -116,7 +122,9 @@ class RippleProcedure(Procedure):
 
     Startup makes sure the scope measures the maximum, minimum, mean and peak-to-peak of
     ``channel``, adding the measurements it lacks to those already set up, e.g. from the front
-    panel, see :meth:`add_missing_measurements`, and shows them in a results table.
+    panel, see :meth:`add_missing_measurements`, shows them in a results table, and shows the
+    horizontal bar cursors on ``channel`` at ``cursor_lo`` percent below and ``cursor_hi``
+    percent above ``target``, see :meth:`show_cursors`.
 
     No instrument here controls the load, so before the first combination and whenever the load
     changes, the procedure pauses for the user to set it: it hands a prompt such as
@@ -163,6 +171,26 @@ class RippleProcedure(Procedure):
         default=[20e6, 250e6, 1e9],
         description="Bandwith values to check",
     )
+    target = FloatParameter(
+        "Rail target",
+        units="V",
+        default=0,
+        description="Target voltage for rail under test",
+    )
+    cursor_hi = FloatParameter(
+        "Cursor high",
+        units="%",
+        default=0,
+        minimum=0,
+        description="High cursor value given as a percentage above target",
+    )
+    cursor_lo = FloatParameter(
+        "Cursor low",
+        units="%",
+        default=0,
+        minimum=0,
+        description="Low cursor value given as a percentage below target",
+    )
     pop_min = IntegerParameter(
         "Sample population minimum",
         default=300,
@@ -208,10 +236,14 @@ class RippleProcedure(Procedure):
 
     def startup(self) -> None:
         """Connect to the scope, stop acquisition, add the missing measurements of ``channel``
-        and a results table, and reset the measurement populations.
+        and a results table, show the cursors, and reset the measurement populations.
 
         See :meth:`add_missing_measurements` for the measurements added. The results table is
-        ``RESULTS_TABLE``; one the scope shows already is kept as it is.
+        ``RESULTS_TABLE``; one the scope shows already is kept as it is. The cursors are shown
+        on ``channel`` about ``target``, see :meth:`show_cursors`.
+
+        :raises ValueError: If a cursor level lies outside the voltages the scope shows of
+            ``channel``.
         """
         log.info("Connecting to the scope.")
         self.scope = TektronixMSO58(self.scope_resource, timeout=SCOPE_TIMEOUT)
@@ -220,6 +252,7 @@ class RippleProcedure(Procedure):
         self.scope.acquisition_enabled = False
         self.add_missing_measurements()
         self._add_results_table()
+        self.show_cursors()
         self.scope.clear_acquisitions()
         _ = self.scope.complete  # The scope clears in the background.
 
@@ -396,6 +429,25 @@ class RippleProcedure(Procedure):
             log.info(f"Added scope measurement MEAS{number}: {kind} of {source}.")
             added.append(measurement)
         return added
+
+    def show_cursors(self) -> tuple[float, float]:
+        """Show the horizontal bar cursors on ``channel`` below and above ``target``.
+
+        Cursor A marks the low level, ``cursor_lo`` percent below ``target``, and cursor B the
+        high level, ``cursor_hi`` percent above it, see :func:`cursor_levels`. The scope shows
+        the cursors, on ``channel``, as soon as the levels are set, and logs them.
+
+        :returns: The low and high levels in volts.
+        :raises ValueError: If a level lies outside the voltages the scope shows of ``channel``;
+            change the channel's scale, position or offset on the scope first.
+        """
+        low, high = cursor_levels(self.target, self.cursor_lo, self.cursor_hi)
+        self.scope.cursor.set_levels(self.scope.channels[self.channel], low, high)
+        log.info(
+            f"Cursors shown on CH{self.channel} at {low} V (target {self.target} V - "
+            f"{self.cursor_lo} %) and {high} V (target + {self.cursor_hi} %)."
+        )
+        return low, high
 
     def capture_file_name(self, load: int, horizontal_div: float, bandwidth: float) -> str:
         """Return the file name of the capture taken at one combination.
@@ -594,6 +646,22 @@ class RippleProcedure(Procedure):
                 unchanged_since = now
             sleep(POLL_INTERVAL)
         return False
+
+
+def cursor_levels(target: float, below: float, above: float) -> tuple[float, float]:
+    """Return the cursor levels a percentage below and above a target voltage.
+
+    Each percentage is taken of the magnitude of the target, so the low level always lies below
+    the high one: a 5 V target with 4 % below and 5 % above gives 4.8 V and 5.25 V, and a -5 V
+    target -5.2 V and -4.75 V.
+
+    :param target: The target voltage in volts.
+    :param below: The distance of the low level below the target, as a percentage of it.
+    :param above: The distance of the high level above the target, as a percentage of it.
+    :returns: The low and high levels in volts.
+    """
+    magnitude = abs(target)
+    return target - magnitude * below / 100, target + magnitude * above / 100
 
 
 def deviation_percent(value: float, mean: float) -> float:
