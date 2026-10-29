@@ -68,7 +68,6 @@ def window(qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rip
     window.inputs.loads.setText("[0, 50]")
     window.inputs.horizontal_divs.setText("[1 us]")
     window.inputs.bandwidths.setText("[20 MHz]")
-    window.inputs.local_capture_dir.setText(str(tmp_path))
     return window
 
 
@@ -156,6 +155,9 @@ def test_queue_builds_the_procedure_from_the_inputs(
     assert procedure.scope_resource == RESOURCE
     assert procedure.combinations() == [(0, 1e-6, 20e6), (50, 1e-6, 20e6)]
     assert Path(queued[0].data_filename) == tmp_path / "ripple_0Vin_1.csv"
+    # The captures go next to the results file.
+    assert procedure.results_directory == tmp_path
+    assert procedure.capture_directory == tmp_path / "captures"
 
 
 def test_queue_reports_invalid_parameters_instead_of_raising(

@@ -90,6 +90,9 @@ RESULTS = [
 ]
 # The results table startup shows on the scope, which lists every measurement with its statistics.
 RESULTS_TABLE = "TABLE1"
+#: The results directory of a procedure no runner has set one on, relative to the working
+#: directory.
+DEFAULT_RESULTS_DIRECTORY = "results"
 
 # The SI prefixes of the capture file names, from the largest down; "u" stands for micro.
 _SI_PREFIXES = [
@@ -214,12 +217,6 @@ class RippleProcedure(Procedure):
         default="C:/Temp/Ripple/",
         description="Directory on the scope the captures are saved to before they are moved",
     )
-    local_capture_dir = StringParameter(
-        "Local capture directory",
-        default="./results/captures/",
-        description="Directory on PC to save captures",
-    )
-
     DATA_COLUMNS: ClassVar[list[str]] = [
         VIN_COLUMN,
         LOAD_COLUMN,
@@ -238,14 +235,19 @@ class RippleProcedure(Procedure):
         self._pause_requested = threading.Event()
         #: Receives the prompt each time the procedure pauses; see :meth:`pause`.
         self.pause_handler: Callable[[str], None] = self.prompt_on_console
+        #: The directory on this computer the results file of the run goes to; the captures are
+        #: moved to :attr:`capture_directory` inside it. The runner sets it, as the ripple window
+        #: does from its results directory when it queues a run.
+        self.results_directory: Path = Path(DEFAULT_RESULTS_DIRECTORY)
 
     @property
-    def local_capture_directory(self) -> Path:
+    def capture_directory(self) -> Path:
         """Get the directory on this computer the captures are moved to.
 
-        It is ``captures`` inside ``local_capture_dir``.
+        It is ``captures`` inside :attr:`results_directory`, so the captures sit next to the
+        results file and the log of the run.
         """
-        return Path(self.local_capture_dir) / "captures"
+        return self.results_directory / "captures"
 
     def startup(self) -> None:
         """Connect to the scope, stop acquisition, add the missing measurements of ``channel``
@@ -283,9 +285,9 @@ class RippleProcedure(Procedure):
         the statistics restart, acquisition runs until every measurement has collected
         ``pop_min`` values, and then stops. The scope rounds both settings to ones it supports.
         A capture of the screen is then saved on the scope in ``scope_capture_dir`` under
-        :meth:`capture_file_name`, and moved to :attr:`local_capture_directory` on this
-        computer, so the scope keeps none of the captures; both directories are created first
-        if they do not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
+        :meth:`capture_file_name`, and moved to :attr:`capture_directory` on this computer,
+        so the scope keeps none of the captures; both directories are created first if they do
+        not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
         the mean of the first MEAN measurement of ``channel`` that the scope lists, the maximum
         of its first MAXIMUM measurement, the minimum of its first MINIMUM measurement and the
         mean of its first PK2PK measurement, each over all acquisitions, and the overshoot and
@@ -307,7 +309,7 @@ class RippleProcedure(Procedure):
         }
         numbers = [_measurement_number(measurement) for measurement in measurements]
         scope_directory = self._make_scope_capture_dir()
-        local_directory = self.local_capture_directory
+        local_directory = self.capture_directory
         local_directory.mkdir(parents=True, exist_ok=True)
         channel = self.scope.channels[self.channel]
         combinations = self.combinations()

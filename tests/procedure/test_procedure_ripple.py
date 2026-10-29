@@ -816,11 +816,12 @@ def test_default_pause_handler_prompts_on_the_console(monkeypatch: pytest.Monkey
     assert prompts == ["Set the load to 50. Press Enter to continue. "]
 
 
-def test_local_capture_directory_is_captures_in_the_local_capture_dir() -> None:
-    procedure = RippleProcedure(local_capture_dir="nested/results")
-    procedure.refresh_parameters()
-    assert procedure.local_capture_directory == Path("nested/results") / "captures"
-    assert RippleProcedure().local_capture_directory == Path("results/captures/captures")
+def test_capture_directory_is_captures_in_the_results_directory() -> None:
+    procedure = RippleProcedure()
+    assert procedure.results_directory == Path("results")
+    assert procedure.capture_directory == Path("results/captures")
+    procedure.results_directory = Path("nested/results")
+    assert procedure.capture_directory == Path("nested/results/captures")
 
 
 @pytest.mark.parametrize("channel", [0, 9])
@@ -860,11 +861,12 @@ def test_execute_makes_missing_capture_directories(
     assert sum(event[0] == "make_directory" for event in events) == len(made)
 
 
-@pytest.mark.parametrize("local_capture_dir", [None, "nested/captures"])
+@pytest.mark.parametrize("results_directory", ["results", "nested/results"])
 def test_execute_moves_captures_to_local_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local_capture_dir: str | None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, results_directory: str
 ) -> None:
-    local_directory = tmp_path / (local_capture_dir or "results/captures") / "captures"
+    # The results directory does not exist yet; execute makes it with the captures directory.
+    local_directory = tmp_path / results_directory / "captures"
     names = ["12Vin ripple 0Load 1us 20MHz.png", "12Vin ripple 0Load 1us 1GHz.png"]
     deleted: list[str] = []
 
@@ -875,10 +877,8 @@ def test_execute_moves_captures_to_local_directory(
 
     scope = make_scope(DEFAULT_NAMES, repeat(300), [])
     scope.delete_file.side_effect = delete_file
-    parameters: dict[str, object] = {"vin": 12, "pop_min": 300, **TWO_COMBINATIONS}
-    if local_capture_dir is not None:
-        parameters["local_capture_dir"] = local_capture_dir
-    procedure = make_running_procedure(monkeypatch, scope, **parameters)
+    procedure = make_running_procedure(monkeypatch, scope, vin=12, pop_min=300, **TWO_COMBINATIONS)
+    procedure.results_directory = tmp_path / results_directory
     procedure.execute()
     assert sorted(path.name for path in local_directory.iterdir()) == sorted(names)
     for name in names:
@@ -1082,5 +1082,5 @@ def test_execute_logs_capture_save_and_transfer(
     size = len(f"image of {scope_path}".encode())
     timed = [re.sub(r"\d+\.\d s", "N s", message) for message in caplog.messages]
     assert f"Capture saved to {scope_path} on the scope in N s." in timed
-    local_path = procedure.local_capture_directory / name
+    local_path = procedure.capture_directory / name
     assert f"Capture moved to {local_path}: {size} bytes in N s." in timed

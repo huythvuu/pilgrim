@@ -9,7 +9,6 @@ from pymeasure.display.widgets import InputsWidget
 from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.parameters import FloatListParameter, IntegerListParameter
 
-from .directory_input import DirectoryInput
 from .list_input import ListInput
 from .visa_resource_input import VisaResourceInput
 
@@ -31,7 +30,6 @@ INPUTS = (
     "cursor_lo",
     "pop_min",
     "scope_capture_dir",
-    "local_capture_dir",
 )
 
 
@@ -40,11 +38,10 @@ class RippleInputsWidget(InputsWidget):
 
     The scope resource is chosen from the instruments VISA finds (:class:`VisaResourceInput`),
     the lists of loads, horizontal scales and bandwidths are typed with live checking
-    (:class:`ListInput`), the local capture directory is browsed for (:class:`DirectoryInput`),
-    and the other parameters get PyMeasure's inputs for their types. The cursor levels,
-    ``cursor_hi`` and ``cursor_lo``, are shown only while the ``use_cursor`` box is checked,
-    since the procedure ignores them otherwise. Each input is an attribute named after its
-    parameter, e.g. ``loads``.
+    (:class:`ListInput`), and the other parameters get PyMeasure's inputs for their types. The
+    cursor levels, ``cursor_hi`` and ``cursor_lo``, are shown only while the ``use_cursor`` box
+    is checked, since the procedure ignores them otherwise. Each input is an attribute named
+    after its parameter, e.g. ``loads``.
 
     :param parent: The parent widget.
     :param inputs_in_scrollarea: Whether to put the inputs in a scroll area, so the widget can
@@ -66,7 +63,6 @@ class RippleInputsWidget(InputsWidget):
     cursor_lo: ScientificInput
     pop_min: IntegerInput
     scope_capture_dir: StringInput
-    local_capture_dir: DirectoryInput
 
     def __init__(
         self, parent: QtWidgets.QWidget | None = None, inputs_in_scrollarea: bool = False
@@ -90,8 +86,6 @@ class RippleInputsWidget(InputsWidget):
         for name, parameter in self._procedure.parameter_objects().items():
             if name == "scope_resource":
                 parameter.ui_class = VisaResourceInput
-            elif name == "local_capture_dir":
-                parameter.ui_class = DirectoryInput
             elif name in ("cursor_hi", "cursor_lo"):
                 parameter.group_by = {"use_cursor": True}
             elif isinstance(parameter, FloatListParameter | IntegerListParameter):

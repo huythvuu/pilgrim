@@ -11,6 +11,7 @@ from pymeasure.display.windows import ManagedWindowBase
 from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.procedure_ripple import (
     BANDWIDTH_COLUMN,
+    DEFAULT_RESULTS_DIRECTORY,
     OVERSHOOT_COLUMN,
     PK2PK_COLUMN,
     UNDERSHOOT_COLUMN,
@@ -29,8 +30,6 @@ log.addHandler(logging.NullHandler())
 DISPLAYS = ("vin", "channel", "loads", "horizontal_divs", "bandwidths")
 #: The default results file name, with parameter placeholders; PyMeasure appends an index.
 DEFAULT_FILENAME = "{Procedure name}_{Vin}Vin"
-#: The default directory of the results files, relative to the working directory.
-DEFAULT_DIRECTORY = "results"
 
 
 class RippleWindow(ManagedWindowBase):
@@ -44,8 +43,9 @@ class RippleWindow(ManagedWindowBase):
     captures as they arrive, and the log. Aborting a paused procedure ends it.
 
     The log of each run is also saved next to its results file, under the same name with the
-    ``.log`` extension (see :class:`RunLogHandler`). The log tab shows records from INFO up,
-    while the file holds every record that reaches it, DEBUG included.
+    ``.log`` extension (see :class:`RunLogHandler`), and the captures go to ``captures`` in the
+    same directory. The log tab shows records from INFO up, while the file holds every record
+    that reaches it, DEBUG included.
 
     :param parent: The parent widget.
     """
@@ -74,7 +74,7 @@ class RippleWindow(ManagedWindowBase):
         self.setWindowTitle("Ripple capture")
         self.setStatusBar(QtWidgets.QStatusBar(self))  # Shows what the procedure waits for.
         self.filename = DEFAULT_FILENAME
-        self.directory = str(Path.cwd() / DEFAULT_DIRECTORY)
+        self.directory = str(Path.cwd() / DEFAULT_RESULTS_DIRECTORY)
         # Only results files with these columns can be opened into the window.
         self.browser_widget.browser.measured_quantities.update(
             [
@@ -130,7 +130,8 @@ class RippleWindow(ManagedWindowBase):
     def queue(self, procedure: RippleProcedure | None = None) -> None:
         """Queue a run of the procedure, pausing through the message panel, for the inputs.
 
-        An input that is not valid is reported instead of queued.
+        The procedure moves its captures to ``captures`` in the results directory. An input
+        that is not valid is reported instead of queued.
 
         :param procedure: The procedure to run; built from the inputs when None.
         """
@@ -141,6 +142,7 @@ class RippleWindow(ManagedWindowBase):
                 self.report_invalid_parameters(str(error))
                 return
         procedure.pause_handler = self.message_widget.prompt
+        procedure.results_directory = Path(self.directory)
         super().queue(procedure)
 
     def report_invalid_parameters(self, reason: str) -> None:
@@ -182,7 +184,7 @@ class RippleWindow(ManagedWindowBase):
         :param experiment: The experiment whose procedure is running.
         """
         super().running(experiment)
-        self.captures_widget.watch(experiment.procedure.local_capture_directory)
+        self.captures_widget.watch(experiment.procedure.capture_directory)
         self.message_widget.set_running(True)
 
     def finished(self, experiment: Experiment) -> None:
