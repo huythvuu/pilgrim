@@ -19,9 +19,14 @@ RUN_TIMEOUT = 10_000
 
 
 def make_scope() -> MagicMock:
-    """Return a mock scope with one PK2PK measurement of CH1 whose population is always full."""
+    """Return a mock scope measuring the mean, maximum and minimum of CH1, always fully populated.
+
+    A measurement the procedure adds joins the ones listed.
+    """
     scope = MagicMock()
-    scope.measurement_names = ["MEAS1"]
+    names = ["MEAS1", "MEAS2", "MEAS3"]
+    kinds = {1: "MEAN", 2: "MAXIMUM", 3: "MINIMUM"}
+    scope.measurement_names = names
     scope.measurements = {}
     scope.channels = {number: MagicMock() for number in range(1, 9)}
     scope.check_errors.return_value = []
@@ -31,15 +36,20 @@ def make_scope() -> MagicMock:
     def add_child(cls: type, number: int, **kwargs: object) -> MagicMock:
         measurement = MagicMock()
         measurement.id = number
-        measurement.type, measurement.source = "PK2PK", "CH1"
-        measurement.maximum = 0.01
+        measurement.type, measurement.source = kinds.get(number, "PK2PK"), "CH1"
+        measurement.mean, measurement.maximum, measurement.minimum = 0.01, 0.02, 0.0
         measurement.uses_global_population_limit = False
         measurement.population_limit_enabled = False
         measurement.population_limit = 1000
         scope.measurements[number] = measurement
         return measurement
 
+    def add_measurement(number: int) -> MagicMock:
+        names.append(f"MEAS{number}")
+        return add_child(MagicMock, number)
+
     scope.add_child.side_effect = add_child
+    scope.add_measurement.side_effect = add_measurement
     return scope
 
 
@@ -187,5 +197,7 @@ def test_debug_records_reach_the_run_log_but_not_the_log_tab(
     window.abort()
     experiment = wait_for_end(qtbot, window)
     text = Path(experiment.data_filename).with_suffix(".log").read_text(encoding="utf-8")
-    assert "DEBUG pilgrim.procedure.procedure_ripple: Poll 1: MEAS1=300 (min 300)" in text
+    # Startup adds the PK2PK measurement, MEAS4, to the three the scope lists.
+    poll = "Poll 1: MEAS1=300, MEAS2=300, MEAS3=300, MEAS4=300 (min 300)"
+    assert f"DEBUG pilgrim.procedure.procedure_ripple: {poll}" in text
     assert "Poll 1:" not in window.log_widget.view.toPlainText()

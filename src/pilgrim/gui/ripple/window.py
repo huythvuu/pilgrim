@@ -9,7 +9,15 @@ from pymeasure.display.widgets import LogWidget, PlotWidget, TableWidget
 from pymeasure.display.windows import ManagedWindowBase
 
 from pilgrim.procedure import RippleProcedure
-from pilgrim.procedure.procedure_ripple import BANDWIDTH_COLUMN, PK2PK_MAXIMUM_COLUMN
+from pilgrim.procedure.procedure_ripple import (
+    BANDWIDTH_COLUMN,
+    OVERSHOOT_COLUMN,
+    PK2PK_COLUMN,
+    UNDERSHOOT_COLUMN,
+    VMAX_COLUMN,
+    VMEAN_COLUMN,
+    VMIN_COLUMN,
+)
 
 from .components import INPUTS, CapturesWidget, LoadPromptWidget, RippleInputsWidget
 from .run_log import RunLogHandler
@@ -45,7 +53,7 @@ class RippleWindow(ManagedWindowBase):
         self.table_widget = TableWidget("Results Table", columns, by_column=False)
         self.captures_widget = CapturesWidget()
         self.plot_widget = PlotWidget(
-            "Results Graph", columns, x_axis=BANDWIDTH_COLUMN, y_axis=PK2PK_MAXIMUM_COLUMN
+            "Results Graph", columns, x_axis=BANDWIDTH_COLUMN, y_axis=VMAX_COLUMN
         )
         self.log_widget = LogWidget("Experiment Log")
         super().__init__(
@@ -66,7 +74,15 @@ class RippleWindow(ManagedWindowBase):
         self.directory = str(Path.cwd() / DEFAULT_DIRECTORY)
         # Only results files with these columns can be opened into the window.
         self.browser_widget.browser.measured_quantities.update(
-            [BANDWIDTH_COLUMN, PK2PK_MAXIMUM_COLUMN]
+            [
+                BANDWIDTH_COLUMN,
+                VMEAN_COLUMN,
+                VMAX_COLUMN,
+                VMIN_COLUMN,
+                PK2PK_COLUMN,
+                OVERSHOOT_COLUMN,
+                UNDERSHOOT_COLUMN,
+            ]
         )
         # The DEBUG records of a run would flood the log tab; the run log file keeps them.
         self.log_widget.handler.setLevel(logging.INFO)

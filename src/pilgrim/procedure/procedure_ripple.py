@@ -1,12 +1,14 @@
 """Output voltage ripple capture procedure."""
 
 import logging
+import math
+import re
 import threading
 from collections.abc import Callable
 from enum import IntEnum
 from pathlib import Path
 from time import perf_counter, sleep
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 from pymeasure.experiment import Procedure
 
@@ -32,6 +34,8 @@ SCOPE_TIMEOUT = 10_000
 class ScopeEvent(IntEnum):
     """Event codes the scope reports that the procedure handles."""
 
+    #: A command could not be carried out, e.g. adding a results table that exists already.
+    COMMAND_ERROR = 100
     #: A save, e.g. of a capture, could not be completed.
     SAVE_FAILED = 200
     #: A file or directory path does not exist.
@@ -42,9 +46,39 @@ VIN_COLUMN = "Vin (V)"
 LOAD_COLUMN = "Load"
 HORIZONTAL_DIV_COLUMN = "Horizontal Div (s)"
 BANDWIDTH_COLUMN = "Bandwidth (Hz)"
-PK2PK_MAXIMUM_COLUMN = "Peak-to-Peak overall max (V)"
-# The type of the scope measurement whose maximum over all acquisitions is recorded.
-PEAK_TO_PEAK = "PK2PK"
+VMEAN_COLUMN = "Mean Vmean (V)"
+VMAX_COLUMN = "Max Vmax (V)"
+VMIN_COLUMN = "Min Vmin (V)"
+PK2PK_COLUMN = "Mean Vpk2pk (V)"
+OVERSHOOT_COLUMN = "Overshoot (%)"
+UNDERSHOOT_COLUMN = "Undershoot (%)"
+# The measurement types of the output voltage channel the scope must have; startup adds the
+# missing ones.
+REQUIRED_TYPES = ["MAXIMUM", "MINIMUM", "MEAN", "PK2PK"]
+
+
+class Result(NamedTuple):
+    """A results column and the scope measurement statistic recorded in it."""
+
+    #: The column of :attr:`RippleProcedure.DATA_COLUMNS`.
+    column: str
+    #: The type of the measurement of the output voltage channel the statistic comes from.
+    measurement_type: str
+    #: The statistic of that measurement over all acquisitions, as the measurement interface
+    #: names it.
+    statistic: str
+
+
+#: The results read from the scope at every combination, in column order; the overshoot and
+#: undershoot columns follow, computed from them.
+RESULTS = [
+    Result(VMEAN_COLUMN, "MEAN", "mean"),
+    Result(VMAX_COLUMN, "MAXIMUM", "maximum"),
+    Result(VMIN_COLUMN, "MINIMUM", "minimum"),
+    Result(PK2PK_COLUMN, "PK2PK", "mean"),
+]
+# The results table startup shows on the scope, which lists every measurement with its statistics.
+RESULTS_TABLE = "TABLE1"
 
 # The SI prefixes of the capture file names, from the largest down; "u" stands for micro.
 _SI_PREFIXES = [
@@ -79,6 +113,10 @@ def format_with_si_prefix(value: float, unit: str) -> str:
 
 class RippleProcedure(Procedure):
     """Capture the output voltage ripple on an MSO58 oscilloscope.
+
+    Startup makes sure the scope measures the maximum, minimum, mean and peak-to-peak of
+    ``channel``, adding the measurements it lacks to those already set up, e.g. from the front
+    panel, see :meth:`add_missing_measurements`, and shows them in a results table.
 
     No instrument here controls the load, so before the first combination and whenever the load
     changes, the procedure pauses for the user to set it: it hands a prompt such as
@@ -147,7 +185,9 @@ class RippleProcedure(Procedure):
         LOAD_COLUMN,
         HORIZONTAL_DIV_COLUMN,
         BANDWIDTH_COLUMN,
-        PK2PK_MAXIMUM_COLUMN,
+        *(result.column for result in RESULTS),
+        OVERSHOOT_COLUMN,
+        UNDERSHOOT_COLUMN,
     ]
 
     scope: TektronixMSO58
@@ -167,40 +207,54 @@ class RippleProcedure(Procedure):
         return Path(self.local_capture_dir) / "captures"
 
     def startup(self) -> None:
-        """Connect to the scope, stop acquisition, and reset the measurement populations."""
+        """Connect to the scope, stop acquisition, add the missing measurements of ``channel``
+        and a results table, and reset the measurement populations.
+
+        See :meth:`add_missing_measurements` for the measurements added. The results table is
+        ``RESULTS_TABLE``; one the scope shows already is kept as it is.
+        """
         log.info("Connecting to the scope.")
         self.scope = TektronixMSO58(self.scope_resource, timeout=SCOPE_TIMEOUT)
         state = "acquiring" if self.scope.acquisition_enabled else "stopped"
         log.info(f"Connected to {self.scope.id}, found {state}.")
         self.scope.acquisition_enabled = False
+        self.add_missing_measurements()
+        self._add_results_table()
         self.scope.clear_acquisitions()
         _ = self.scope.complete  # The scope clears in the background.
 
     def execute(self) -> None:
         """Acquire at every combination until each scope measurement has ``pop_min`` values.
 
-        The measurements are the ones set up on the scope, e.g. from its front panel. Before the
-        first combination and whenever the load changes, the procedure pauses until the user
-        has set the load, see :meth:`pause`. At every combination, the scope's horizontal scale
-        and the bandwidth limit of ``channel`` are set, the statistics restart, acquisition runs
-        until every measurement has collected ``pop_min`` values, and then stops. The scope
-        rounds both settings to ones it supports.
+        The measurements are the ones on the scope, those set up e.g. from its front panel and
+        those :meth:`startup` added. Before the first combination and whenever the load changes,
+        the procedure pauses until the user has set the load, see :meth:`pause`. At every
+        combination, the scope's horizontal scale and the bandwidth limit of ``channel`` are set,
+        the statistics restart, acquisition runs until every measurement has collected
+        ``pop_min`` values, and then stops. The scope rounds both settings to ones it supports.
         A capture of the screen is then saved on the scope in ``scope_capture_dir`` under
         :meth:`capture_file_name`, and moved to :attr:`local_capture_directory` on this
         computer, so the scope keeps none of the captures; both directories are created first
         if they do not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
-        the maximum over all acquisitions of the first PK2PK measurement of ``channel`` that
-        the scope lists. Stops early when asked to.
+        the mean of the first MEAN measurement of ``channel`` that the scope lists, the maximum
+        of its first MAXIMUM measurement, the minimum of its first MINIMUM measurement and the
+        mean of its first PK2PK measurement, each over all acquisitions, and the overshoot and
+        undershoot computed from them, see :func:`deviation_percent`. Stops early when asked
+        to.
 
-        :raises ValueError: If the scope has no measurements or no PK2PK measurement of
-            ``channel``, or a capture could not be saved.
+        :raises ValueError: If the scope has no measurements or no MEAN, MAXIMUM, MINIMUM or
+            PK2PK measurement of ``channel``, which :meth:`startup` adds, or a capture could
+            not be saved.
         """
         measurements = self._attach_measurements()
         if not measurements:
             raise ValueError("The scope has no measurements; add at least one on the scope.")
         for measurement in measurements:
             _log_measurement(measurement, self.pop_min)
-        peak_to_peak = self._peak_to_peak_measurement(measurements)
+        recorded = {
+            result.measurement_type: self._measurement_of(measurements, result.measurement_type)
+            for result in RESULTS
+        }
         numbers = [_measurement_number(measurement) for measurement in measurements]
         scope_directory = self._make_scope_capture_dir()
         local_directory = self.local_capture_directory
@@ -234,17 +288,12 @@ class RippleProcedure(Procedure):
             if not filled:
                 log.info("Ripple measurement stopped.")
                 return
-            _ = self.scope.complete  # Lets the stop take effect before the maximum is read.
+            _ = self.scope.complete  # Lets the stop take effect before the results are read.
             # Acquisitions in flight when the populations filled still add values, so the
-            # populations the maximum comes from are read once acquisition has stopped.
+            # populations the results come from are read once acquisition has stopped.
             populations = self.scope.read_populations(numbers)
             log.info(f"Acquisition stopped at {_format_populations(populations)}.")
-            maximum = _number(peak_to_peak.maximum, f"{PEAK_TO_PEAK} maximum")
-            population = populations[_measurement_number(peak_to_peak)]
-            log.info(
-                f"{PEAK_TO_PEAK} maximum {maximum} V from {population} values over "
-                f"{self.scope.acquisition_count} acquisitions."
-            )
+            results = self._read_results(recorded, populations)
             file_name = self.capture_file_name(load, horizontal_div, bandwidth)
             scope_path = f"{scope_directory}/{file_name}"
             self._save_capture(scope_path)
@@ -256,7 +305,7 @@ class RippleProcedure(Procedure):
                     LOAD_COLUMN: load,
                     HORIZONTAL_DIV_COLUMN: horizontal_div,
                     BANDWIDTH_COLUMN: bandwidth,
-                    PK2PK_MAXIMUM_COLUMN: maximum,
+                    **results,
                 },
             )
             self.emit("progress", 100 * done / len(combinations))
@@ -319,6 +368,35 @@ class RippleProcedure(Procedure):
             for bandwidth in self.bandwidths
         ]
 
+    def add_missing_measurements(self) -> list[TektronixMSO456Measurement]:
+        """Add the measurements of ``channel`` in :attr:`REQUIRED_TYPES` that the scope lacks.
+
+        The measurements already on the scope, e.g. from its front panel, are kept, and a type
+        the channel already has is not added again. Each missing one is added under the next
+        number above the highest in use, with its type and source set, and logged.
+
+        :returns: The measurements added, in the order of :attr:`REQUIRED_TYPES`; empty when
+            the scope has them all.
+        :raises ValueError: If the scope refuses a measurement.
+        """
+        source = f"CH{self.channel}"
+        measurements = self._attach_measurements()
+        present = {measurement.type for measurement in measurements if measurement.source == source}
+        missing = [kind for kind in REQUIRED_TYPES if kind not in present]
+        if not missing:
+            log.info(f"The scope has the {', '.join(REQUIRED_TYPES)} measurements of {source}.")
+            return []
+        number = max((_measurement_number(measurement) for measurement in measurements), default=0)
+        added: list[TektronixMSO456Measurement] = []
+        for kind in missing:
+            number += 1
+            measurement = self.scope.add_measurement(number)
+            measurement.type = kind
+            measurement.source = source
+            log.info(f"Added scope measurement MEAS{number}: {kind} of {source}.")
+            added.append(measurement)
+        return added
+
     def capture_file_name(self, load: int, horizontal_div: float, bandwidth: float) -> str:
         """Return the file name of the capture taken at one combination.
 
@@ -347,11 +425,28 @@ class RippleProcedure(Procedure):
             try:
                 self.scope.working_directory = path
             except ValueError as exc:
-                if str(ScopeEvent.PATH_NOT_FOUND) not in str(exc):
+                if not _has_event(exc, ScopeEvent.PATH_NOT_FOUND):
                     raise
                 log.info(f"Creating {path} on the scope.")
                 self.scope.make_directory(path)
         return directory
+
+    def _add_results_table(self) -> None:
+        """Show ``RESULTS_TABLE`` on the scope, leaving the table as it is where it exists.
+
+        The scope has no query for the tables it shows, so the table is added and the refusal
+        of one that exists already is passed over.
+
+        :raises ValueError: If the scope refuses the table for any other reason.
+        """
+        try:
+            self.scope.add_results_table(RESULTS_TABLE)
+        except ValueError as exc:
+            if not _has_event(exc, ScopeEvent.COMMAND_ERROR):
+                raise
+            log.info(f"The scope shows results table {RESULTS_TABLE} already.")
+            return
+        log.info(f"Added results table {RESULTS_TABLE} to the scope.")
 
     def _save_capture(self, path: str) -> None:
         """Save a capture of the scope screen to ``path`` on the scope.
@@ -385,20 +480,51 @@ class RippleProcedure(Procedure):
         # A short transfer is the first sign of a read the scope cut off.
         log.info(f"Capture moved to {local_path}: {len(capture)} bytes in {transfer:.1f} s.")
 
-    def _peak_to_peak_measurement(
-        self, measurements: list[TektronixMSO456Measurement]
+    def _measurement_of(
+        self, measurements: list[TektronixMSO456Measurement], measurement_type: str
     ) -> TektronixMSO456Measurement:
-        """Return the first PK2PK measurement of ``channel``, whose maximum is recorded.
+        """Return the first measurement of ``channel`` of a type, e.g. MEAN.
 
         :param measurements: The measurements on the scope.
+        :param measurement_type: The type looked for.
         :returns: The measurement.
-        :raises ValueError: If no measurement is a PK2PK of the channel.
+        :raises ValueError: If no measurement of the channel has the type.
         """
         source = f"CH{self.channel}"
         for measurement in measurements:
-            if measurement.type == PEAK_TO_PEAK and measurement.source == source:
+            if measurement.type == measurement_type and measurement.source == source:
                 return measurement
-        raise ValueError(f"The scope has no {PEAK_TO_PEAK} measurement of {source}; add one.")
+        raise ValueError(f"The scope has no {measurement_type} measurement of {source}.")
+
+    def _read_results(
+        self, recorded: dict[str, TektronixMSO456Measurement], populations: dict[int, int]
+    ) -> dict[str, float]:
+        """Read the statistics of :attr:`RESULTS` from the scope, derive the rest, and log them.
+
+        The overshoot is the deviation of Max Vmax from Mean Vmean and the undershoot that of
+        Min Vmin, each as a percentage of Mean Vmean, see :func:`deviation_percent`.
+
+        :param recorded: The measurements of ``channel`` by type.
+        :param populations: The populations by measurement number the statistics come from.
+        :returns: The values by column, in the order of :attr:`DATA_COLUMNS`.
+        """
+        results: dict[str, float] = {}
+        read: list[str] = []
+        for result in RESULTS:
+            measurement = recorded[result.measurement_type]
+            name = f"{result.measurement_type} {result.statistic}"
+            value = _number(getattr(measurement, result.statistic), name)
+            results[result.column] = value
+            population = populations[_measurement_number(measurement)]
+            read.append(f"{name} {value} V from {population} values")
+        log.info(f"{', '.join(read)}, over {self.scope.acquisition_count} acquisitions.")
+        mean = results[VMEAN_COLUMN]
+        overshoot = deviation_percent(results[VMAX_COLUMN], mean)
+        undershoot = deviation_percent(results[VMIN_COLUMN], mean)
+        log.info(f"Overshoot {overshoot} %, undershoot {undershoot} %.")
+        results[OVERSHOOT_COLUMN] = overshoot
+        results[UNDERSHOOT_COLUMN] = undershoot
+        return results
 
     def _attach_measurements(self) -> list[TektronixMSO456Measurement]:
         """Return interfaces to the measurements on the scope, in the order the scope lists them.
@@ -468,6 +594,35 @@ class RippleProcedure(Procedure):
                 unchanged_since = now
             sleep(POLL_INTERVAL)
         return False
+
+
+def deviation_percent(value: float, mean: float) -> float:
+    """Return how far a value lies from a mean, as a percentage of the mean.
+
+    The overshoot of a rail is the deviation of its maximum and the undershoot that of its
+    minimum: a maximum of 5.25 V and a minimum of 4.8 V about a mean of 5 V give 5 % and 4 %.
+    The mean keeps its sign, so a negative rail gives negative percentages.
+
+    :param value: The value, e.g. the maximum.
+    :param mean: The mean the value is compared to.
+    :returns: ``abs(value - mean) / mean * 100``, NaN when the mean is zero.
+    """
+    if mean == 0:
+        return math.nan
+    return abs(value - mean) / mean * 100
+
+
+def _has_event(exc: ValueError, event: ScopeEvent) -> bool:
+    """Return whether a refusal raised by the scope driver reports ``event``.
+
+    The driver lists the events of a refusal as ``<code>, <message>``, so the code is matched
+    whole: event 100 does not match a refusal reporting 2100.
+
+    :param exc: The error the driver raised.
+    :param event: The event looked for.
+    :returns: Whether the error reports the event.
+    """
+    return re.search(rf"(?<!\d){int(event)}, ", str(exc)) is not None
 
 
 def _measurement_numbers(names: object) -> list[int]:
