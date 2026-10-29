@@ -14,7 +14,7 @@ dependencies = [
 
 [project.scripts]
 pilgrim = "pilgrim:main"
-pilgrim-ripple = "pilgrim.gui.ripple:main"
+ripple = "pilgrim.gui.ripple:main"
 
 [project.optional-dependencies]
 dev = [
