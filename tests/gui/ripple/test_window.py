@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pymeasure.display.Qt import QtWidgets
 from pymeasure.experiment import Procedure
 from pytestqt.qtbot import QtBot
 
@@ -101,6 +102,30 @@ def test_is_built_for_the_ripple_procedure(window: RippleWindow) -> None:
     assert tabs == ["Results Table", "Captures", "Results Graph", "Experiment Log"]
     assert window.filename == DEFAULT_FILENAME
     assert window.windowTitle() == "Ripple capture"
+
+
+def test_inputs_scroll_while_the_file_settings_stay_below_them(
+    qtbot: QtBot, window: RippleWindow
+) -> None:
+    scroll_area = window.inputs.findChild(QtWidgets.QScrollArea)
+    assert isinstance(scroll_area, QtWidgets.QScrollArea)
+    dock = window.inputs.parentWidget()
+    assert dock is not None
+    layout = dock.layout()
+    assert isinstance(layout, QtWidgets.QBoxLayout)
+    assert layout.stretch(layout.indexOf(window.inputs)) == 1
+    # Shorter than the inputs, the window scrolls them and keeps the file settings whole.
+    window.show()
+    qtbot.waitExposed(window)
+    window.resize(window.width(), 400)
+    qtbot.waitUntil(lambda: scroll_area.verticalScrollBar().maximum() > 0)
+    assert dock.rect().contains(window.file_input.geometry())
+    assert dock.rect().contains(window.queue_button.geometry())
+    # Taller, the spare height goes to the inputs; the buttons stay at the bottom of the dock.
+    window.resize(window.width(), 1000)
+    qtbot.waitUntil(lambda: dock.height() > 2 * window.inputs.minimumSizeHint().height())
+    gap_below_buttons = dock.height() - window.queue_button.geometry().bottom()
+    assert gap_below_buttons < window.queue_button.height()
 
 
 def test_queue_builds_the_procedure_from_the_inputs(

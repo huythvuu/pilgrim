@@ -38,8 +38,10 @@ class RippleWindow(ManagedWindowBase):
 
     The left docks hold the parameter inputs, the results file settings, the Queue and Abort
     buttons, and the load prompt, where the procedure asks for the load to be set whenever it
-    pauses; Continue resumes it. The tabs show the results as a table and a graph, the captures
-    as they arrive, and the log. Aborting a paused procedure ends it.
+    pauses; Continue resumes it. The parameter inputs scroll when the window is too short for
+    them, while the file settings and the buttons stay in view below them. The tabs show the
+    results as a table and a graph, the captures as they arrive, and the log. Aborting a paused
+    procedure ends it.
 
     The log of each run is also saved next to its results file, under the same name with the
     ``.log`` extension (see :class:`RunLogHandler`). The log tab shows records from INFO up,
@@ -66,6 +68,7 @@ class RippleWindow(ManagedWindowBase):
             ),
             inputs=INPUTS,
             displays=DISPLAYS,
+            inputs_in_scrollarea=True,
             parent=parent,
         )
         self.setWindowTitle("Ripple capture")
@@ -100,7 +103,9 @@ class RippleWindow(ManagedWindowBase):
         plain_inputs = self.inputs
         if isinstance(plain_inputs, QtWidgets.QWidget):
             plain_inputs.deleteLater()
-        self.inputs = RippleInputsWidget(parent=self)
+        self.inputs = RippleInputsWidget(
+            parent=self, inputs_in_scrollarea=self.inputs_in_scrollarea
+        )
         self.load_prompt = LoadPromptWidget(self)
         self.load_prompt.prompted.connect(self._show_pause_status)
         self.load_prompt.continued.connect(self.resume_procedure)
@@ -109,6 +114,13 @@ class RippleWindow(ManagedWindowBase):
 
     def _layout(self) -> None:
         super()._layout()
+        # ManagedWindowBase ends the inputs dock with a stretch, which would share the spare
+        # height with the scrolling inputs; giving the inputs the stretch instead keeps the file
+        # settings and the buttons right below them, in view however short the window is.
+        inputs_dock = self.inputs.parentWidget()
+        inputs_layout = None if inputs_dock is None else inputs_dock.layout()
+        if isinstance(inputs_layout, QtWidgets.QBoxLayout):
+            inputs_layout.setStretchFactor(self.inputs, 1)
         dock = QtWidgets.QDockWidget("Load", self)
         dock.setWidget(self.load_prompt)
         dock.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
