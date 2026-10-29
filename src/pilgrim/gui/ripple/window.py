@@ -19,7 +19,7 @@ from pilgrim.procedure.procedure_ripple import (
     VMIN_COLUMN,
 )
 
-from .components import INPUTS, CapturesWidget, LoadPromptWidget, RippleInputsWidget
+from .components import INPUTS, CapturesWidget, MessageWidget, RippleInputsWidget
 from .run_log import RunLogHandler
 
 log = logging.getLogger(__name__)
@@ -37,11 +37,11 @@ class RippleWindow(ManagedWindowBase):
     """Run the ripple procedure: edit its parameters, queue runs and follow them.
 
     The left docks hold the parameter inputs, the results file settings, the Queue and Abort
-    buttons, and the load prompt, where the procedure asks for the load to be set whenever it
-    pauses; Continue resumes it. The parameter inputs scroll when the window is too short for
-    them, while the file settings and the buttons stay in view below them. The tabs show the
-    results as a table and a graph, the captures as they arrive, and the log. Aborting a paused
-    procedure ends it.
+    buttons, and the message panel, where the procedure asks for the load to be set whenever
+    it pauses; Resume continues it, and Pause holds the running procedure at its next step. The
+    parameter inputs scroll when the window is too short for them, while the file settings and
+    the buttons stay in view below them. The tabs show the results as a table and a graph, the
+    captures as they arrive, and the log. Aborting a paused procedure ends it.
 
     The log of each run is also saved next to its results file, under the same name with the
     ``.log`` extension (see :class:`RunLogHandler`). The log tab shows records from INFO up,
@@ -106,11 +106,12 @@ class RippleWindow(ManagedWindowBase):
         self.inputs = RippleInputsWidget(
             parent=self, inputs_in_scrollarea=self.inputs_in_scrollarea
         )
-        self.load_prompt = LoadPromptWidget(self)
-        self.load_prompt.prompted.connect(self._show_pause_status)
-        self.load_prompt.continued.connect(self.resume_procedure)
-        self.manager.aborted.connect(self._clear_prompt)
-        self.manager.failed.connect(self._clear_prompt)
+        self.message_widget = MessageWidget(self)
+        self.message_widget.prompted.connect(self._show_pause_status)
+        self.message_widget.pause_requested.connect(self.pause_procedure)
+        self.message_widget.resumed.connect(self.resume_procedure)
+        self.manager.aborted.connect(self._clear_message)
+        self.manager.failed.connect(self._clear_message)
 
     def _layout(self) -> None:
         super()._layout()
@@ -121,13 +122,13 @@ class RippleWindow(ManagedWindowBase):
         inputs_layout = None if inputs_dock is None else inputs_dock.layout()
         if isinstance(inputs_layout, QtWidgets.QBoxLayout):
             inputs_layout.setStretchFactor(self.inputs, 1)
-        dock = QtWidgets.QDockWidget("Load", self)
-        dock.setWidget(self.load_prompt)
+        dock = QtWidgets.QDockWidget("Message", self)
+        dock.setWidget(self.message_widget)
         dock.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def queue(self, procedure: RippleProcedure | None = None) -> None:
-        """Queue a run of the procedure, pausing through the load prompt, for the inputs.
+        """Queue a run of the procedure, pausing through the message panel, for the inputs.
 
         An input that is not valid is reported instead of queued.
 
@@ -139,7 +140,7 @@ class RippleWindow(ManagedWindowBase):
             except ValueError as error:
                 self.report_invalid_parameters(str(error))
                 return
-        procedure.pause_handler = self.load_prompt.prompt
+        procedure.pause_handler = self.message_widget.prompt
         super().queue(procedure)
 
     def report_invalid_parameters(self, reason: str) -> None:
@@ -157,41 +158,48 @@ class RippleWindow(ManagedWindowBase):
         """
         return self.inputs.get_procedure()
 
+    def pause_procedure(self) -> None:
+        """Ask the running procedure to pause at its next step after the user pressed Pause."""
+        experiment = self._running_experiment()
+        if experiment is not None:
+            experiment.procedure.request_pause()
+
     def resume_procedure(self) -> None:
-        """Let the running procedure continue after the user pressed Continue."""
+        """Let the paused procedure continue after the user pressed Resume."""
         self.statusBar().clearMessage()
-        experiment = self.manager.running_experiment() if self.manager.is_running() else None
+        experiment = self._running_experiment()
         if experiment is not None:
             experiment.procedure.resume()
 
     def abort(self) -> None:
         """Abort the running procedure, which ends it even while it is paused."""
-        self._clear_prompt()
+        self._clear_message()
         super().abort()
 
     def running(self, experiment: Experiment) -> None:
-        """Show the captures of the procedure that started.
+        """Show the captures of the procedure that started and enable Pause.
 
         :param experiment: The experiment whose procedure is running.
         """
         super().running(experiment)
         self.captures_widget.watch(experiment.procedure.local_capture_directory)
+        self.message_widget.set_running(True)
 
     def finished(self, experiment: Experiment) -> None:
-        """Clear the load prompt once a procedure ends.
+        """Clear the message panel once a procedure ends.
 
         :param experiment: The experiment that finished.
         """
         super().finished(experiment)
-        self._clear_prompt()
+        self._clear_message()
 
     def abort_returned(self, experiment: Experiment) -> None:
-        """Clear the load prompt once an aborted procedure has ended.
+        """Clear the message panel once an aborted procedure has ended.
 
         :param experiment: The experiment that was aborted.
         """
         super().abort_returned(experiment)
-        self._clear_prompt()
+        self._clear_message()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         """Stop showing and saving the log of the window that closes."""
@@ -200,13 +208,16 @@ class RippleWindow(ManagedWindowBase):
         self.run_log.close()
         super().closeEvent(event)
 
+    def _running_experiment(self) -> Experiment | None:
+        return self.manager.running_experiment() if self.manager.is_running() else None
+
     def _running_results_path(self) -> Path | None:
-        experiment = self.manager.running_experiment() if self.manager.is_running() else None
+        experiment = self._running_experiment()
         return None if experiment is None else Path(experiment.data_filename)
 
     def _show_pause_status(self, prompt: str) -> None:
         self.statusBar().showMessage(f"Paused: {prompt}")
 
-    def _clear_prompt(self, experiment: Experiment | None = None) -> None:
-        self.load_prompt.clear()
+    def _clear_message(self, experiment: Experiment | None = None) -> None:
+        self.message_widget.clear()
         self.statusBar().clearMessage()

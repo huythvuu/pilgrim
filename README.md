@@ -60,7 +60,8 @@ uv run pilgrim-ripple
 ```
 
 The window edits the parameters of the ripple procedure, queues runs, and shows their results, captures and log.
-The procedure pauses whenever the load must be set; the window then prompts for it and beeps, and Continue resumes the procedure once the load is set.
+The procedure pauses whenever the load must be set; the window then prompts for it in the Message panel and beeps, and Resume continues the procedure once the load is set.
+Pause holds the running procedure at its next step, stopping the acquisition meanwhile, until Resume is pressed.
 Abort ends a paused procedure as well.
 
 ## Development

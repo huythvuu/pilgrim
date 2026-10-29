@@ -4,7 +4,7 @@ from .captures import CapturesWidget
 from .directory_input import DirectoryInput
 from .inputs import INPUTS, RippleInputsWidget
 from .list_input import ListInput
-from .load_prompt import LoadPromptWidget
+from .message import MessageWidget
 from .visa_resource_input import VisaResourceInput, list_visa_resources
 
 __all__ = [
@@ -12,7 +12,7 @@ __all__ = [
     "CapturesWidget",
     "DirectoryInput",
     "ListInput",
-    "LoadPromptWidget",
+    "MessageWidget",
     "RippleInputsWidget",
     "VisaResourceInput",
     "list_visa_resources",

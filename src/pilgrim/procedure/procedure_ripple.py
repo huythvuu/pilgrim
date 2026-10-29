@@ -36,6 +36,8 @@ STALL_WARNING_INTERVAL = 10.0
 # The VISA timeout of the scope in ms; the scope can take seconds to answer while it applies a
 # setting or saves a capture, longer than the VISA default.
 SCOPE_TIMEOUT = 10_000
+#: The prompt of a pause the user asked for through :meth:`RippleProcedure.request_pause`.
+PAUSE_PROMPT = "Paused as requested."
 
 
 class ScopeEvent(IntEnum):
@@ -133,7 +135,8 @@ class RippleProcedure(Procedure):
     ``"Set the load to 50."`` to :attr:`pause_handler` and waits until :meth:`resume` is called,
     or until it is asked to stop. By default the prompt is printed and Enter resumes, as on a
     command line; a GUI replaces the handler with one that shows the prompt and resumes from a
-    button.
+    button. The user can also ask for a pause at any time through :meth:`request_pause`, which
+    the procedure honours at its next step with the prompt ``PAUSE_PROMPT``.
     """
 
     name = StringParameter(
@@ -230,6 +233,7 @@ class RippleProcedure(Procedure):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._resumed = threading.Event()
+        self._pause_requested = threading.Event()
         #: Receives the prompt each time the procedure pauses; see :meth:`pause`.
         self.pause_handler: Callable[[str], None] = self.prompt_on_console
 
@@ -314,6 +318,9 @@ class RippleProcedure(Procedure):
                     log.info("Ripple measurement stopped.")
                     return
                 previous_load = load
+            elif not self._pause_if_requested():
+                log.info("Ripple measurement stopped.")
+                return
             started = perf_counter()
             self.scope.horizontal_scale = horizontal_div
             channel.bandwidth = bandwidth
@@ -373,6 +380,7 @@ class RippleProcedure(Procedure):
         :returns: Whether the procedure was resumed; False when it was asked to stop first.
         """
         self._resumed.clear()
+        self._pause_requested.clear()  # Any pause satisfies a request for one.
         log.info(f"Paused: {prompt}")
         self.pause_handler(prompt)
         while not self._resumed.wait(POLL_INTERVAL):
@@ -384,6 +392,25 @@ class RippleProcedure(Procedure):
     def resume(self) -> None:
         """Let a paused procedure continue; may be called from any thread, e.g. by a GUI."""
         self._resumed.set()
+
+    def request_pause(self) -> None:
+        """Ask the running procedure to pause at its next step; may be called from any thread.
+
+        The procedure then pauses with ``PAUSE_PROMPT`` as :meth:`pause` does, at the next poll
+        of the populations, stopping the acquisition meanwhile and restarting it on resume, or
+        before the next combination. A pause for a load change that comes first satisfies the
+        request; a request made while the procedure is paused is satisfied by that pause.
+        """
+        self._pause_requested.set()
+
+    def _pause_if_requested(self) -> bool:
+        """Pause when a pause was requested, see :meth:`request_pause`.
+
+        :returns: Whether the procedure may go on; False when it was asked to stop while paused.
+        """
+        if not self._pause_requested.is_set():
+            return True
+        return self.pause(PAUSE_PROMPT)
 
     def prompt_on_console(self, prompt: str) -> None:
         """Print the prompt on the console and resume the procedure once Enter is pressed.
@@ -633,6 +660,13 @@ class RippleProcedure(Procedure):
         unchanged_since = started
         polls = 0
         while not self.should_stop():
+            if self._pause_requested.is_set():
+                # The acquisition stops while paused, so the capture shows what the user saw.
+                self.scope.acquisition_enabled = False
+                if not self._pause_if_requested():
+                    return False
+                self.scope.acquisition_enabled = True
+                unchanged_since = perf_counter()  # The pause is no stall.
             polled = perf_counter()
             populations = self.scope.read_populations(numbers)
             now = perf_counter()

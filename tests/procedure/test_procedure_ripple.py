@@ -632,6 +632,114 @@ def test_execute_stops_while_paused_when_asked_to(monkeypatch: pytest.MonkeyPatc
     emit.assert_not_called()
 
 
+ONE_COMBINATION = {"loads": [0], "horizontal_divs": [1e-6], "bandwidths": [20e6]}
+
+
+def request_pause_at_first_poll(procedure: RippleProcedure, scope: MagicMock) -> None:
+    """Make the first read of the populations request a pause, as a GUI would meanwhile."""
+    read = scope.read_populations.side_effect
+
+    def read_and_request(numbers: list[int]) -> dict[int, int]:
+        populations = read(numbers)
+        if scope.read_populations.call_count == 1:
+            procedure.request_pause()
+        return populations
+
+    scope.read_populations.side_effect = read_and_request
+
+
+def record_pauses_and_resume(procedure: RippleProcedure, events: list[tuple[Any, ...]]) -> None:
+    """Make the procedure record every pause in ``events`` and resume at once."""
+
+    def record_and_resume(prompt: str) -> None:
+        events.append(("pause", prompt))
+        procedure.resume()
+
+    procedure.pause_handler = record_and_resume
+
+
+def test_request_pause_stops_acquisition_until_resumed(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[Any, ...]] = []
+    polls = [(100, 100, 100, 100), (300, 300, 300, 300), (305, 306, 307, 308)]
+    scope = make_scope(DEFAULT_NAMES, chain.from_iterable(polls), events)
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
+    record_pauses_and_resume(procedure, events)
+    request_pause_at_first_poll(procedure, scope)
+    procedure.execute()
+    assert [event for event in events if event[0] in {"pause", "acquisition"}] == [
+        ("pause", "Set the load to 0."),
+        ("acquisition", True),
+        ("acquisition", False),
+        ("pause", "Paused as requested."),
+        ("acquisition", True),
+        ("acquisition", False),
+    ]
+    assert len([event for event in events if event[0] == "save_image"]) == 1
+
+
+def test_request_pause_during_a_capture_pauses_before_the_next_combination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope(DEFAULT_NAMES, repeat(300), events)
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **TWO_COMBINATIONS)
+    record_pauses_and_resume(procedure, events)
+
+    def save_and_request(path: str) -> None:
+        events.append(("save_image", path))
+        procedure.request_pause()
+
+    scope.save_image.side_effect = save_and_request
+    procedure.execute()
+    assert [event for event in events if event[0] in {"pause", "save_image", "bandwidth"}] == [
+        ("pause", "Set the load to 0."),
+        ("bandwidth", 1, 20e6),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 20MHz.png"),
+        ("pause", "Paused as requested."),
+        ("bandwidth", 1, 1e9),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 1GHz.png"),
+    ]
+
+
+def test_a_load_change_satisfies_a_requested_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope(DEFAULT_NAMES, repeat(300), events)
+    procedure = make_running_procedure(
+        monkeypatch, scope, pop_min=300, loads=[0, 50], horizontal_divs=[1e-6], bandwidths=[20e6]
+    )
+    record_pauses_and_resume(procedure, events)
+    scope.save_image.side_effect = lambda path: procedure.request_pause()
+    procedure.execute()
+    assert [event for event in events if event[0] == "pause"] == [
+        ("pause", "Set the load to 0."),
+        ("pause", "Set the load to 50."),
+    ]
+
+
+def test_stop_while_paused_on_request_ends_the_acquisition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope(DEFAULT_NAMES, repeat(100), events)
+    procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
+    monkeypatch.setattr(procedure_ripple, "POLL_INTERVAL", 0.001)
+    stopped = False
+
+    def resume_or_stop(prompt: str) -> None:
+        nonlocal stopped
+        if prompt == "Paused as requested.":
+            stopped = True
+        else:
+            procedure.resume()
+
+    procedure.pause_handler = resume_or_stop
+    monkeypatch.setattr(procedure, "should_stop", lambda: stopped)
+    request_pause_at_first_poll(procedure, scope)
+    procedure.execute()
+    assert events[-2:] == [("acquisition", False), ("acquisition", False)]
+    assert not any(event[0] == "save_image" for event in events)
+
+
 def test_pause_resumes_from_another_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     procedure = make_running_procedure(monkeypatch, make_scope([], [], []))
     prompts: list[str] = []
