@@ -1,5 +1,6 @@
 """Tests for the ripple window, with the scope replaced by a mock."""
 
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -151,3 +152,40 @@ def test_abort_while_paused_ends_the_run(qtbot: QtBot, window: RippleWindow) -> 
     assert experiment.procedure.status == Procedure.ABORTED
     assert window.statusBar().currentMessage() == ""
     assert len(experiment.results.data) == 0
+
+
+def test_each_run_saves_its_log_next_to_its_results(
+    qtbot: QtBot, window: RippleWindow, tmp_path: Path
+) -> None:
+    window.queue()
+    window.queue()
+    logs: list[Path] = []
+    for run in range(2):
+        if run:
+            window.manager.resume()  # An abort holds back the rest of the queue.
+        wait_for_prompt(qtbot, window, 0)
+        window.abort()
+        experiment = wait_for_end(qtbot, window)
+        logs.append(Path(experiment.data_filename).with_suffix(".log"))
+        assert window.run_log.path == logs[-1]
+    assert [path.name for path in logs] == ["ripple_0Vin_1.log", "ripple_0Vin_2.log"]
+    for path in logs:
+        text = path.read_text(encoding="utf-8")
+        assert "Connecting to the scope." in text
+        assert "Paused: Set the load to 0." in text
+        path.unlink()  # The file is closed once the run has ended.
+
+
+def test_debug_records_reach_the_run_log_but_not_the_log_tab(
+    qtbot: QtBot, window: RippleWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(logging.getLogger("pilgrim"), "level", logging.DEBUG)
+    window.queue()
+    wait_for_prompt(qtbot, window, 0)
+    window.load_prompt.continue_button.click()
+    wait_for_prompt(qtbot, window, 50)
+    window.abort()
+    experiment = wait_for_end(qtbot, window)
+    text = Path(experiment.data_filename).with_suffix(".log").read_text(encoding="utf-8")
+    assert "DEBUG pilgrim.procedure.procedure_ripple: Poll 1: MEAS1=300 (min 300)" in text
+    assert "Poll 1:" not in window.log_widget.view.toPlainText()

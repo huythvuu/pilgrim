@@ -12,6 +12,7 @@ from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.procedure_ripple import BANDWIDTH_COLUMN, PK2PK_MAXIMUM_COLUMN
 
 from .components import INPUTS, CapturesWidget, LoadPromptWidget, RippleInputsWidget
+from .run_log import RunLogHandler
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
@@ -31,6 +32,10 @@ class RippleWindow(ManagedWindowBase):
     buttons, and the load prompt, where the procedure asks for the load to be set whenever it
     pauses; Continue resumes it. The tabs show the results as a table and a graph, the captures
     as they arrive, and the log. Aborting a paused procedure ends it.
+
+    The log of each run is also saved next to its results file, under the same name with the
+    ``.log`` extension (see :class:`RunLogHandler`). The log tab shows records from INFO up,
+    while the file holds every record that reaches it, DEBUG included.
 
     :param parent: The parent widget.
     """
@@ -63,7 +68,15 @@ class RippleWindow(ManagedWindowBase):
         self.browser_widget.browser.measured_quantities.update(
             [BANDWIDTH_COLUMN, PK2PK_MAXIMUM_COLUMN]
         )
+        # The DEBUG records of a run would flood the log tab; the run log file keeps them.
+        self.log_widget.handler.setLevel(logging.INFO)
         logging.getLogger().addHandler(self.log_widget.handler)
+        # The manager knows the run before its worker starts, so the startup is logged too.
+        self.run_log = RunLogHandler(self._running_results_path)
+        logging.getLogger().addHandler(self.run_log)
+        self.manager.finished.connect(self.run_log.end_run)
+        self.manager.failed.connect(self.run_log.end_run)
+        self.manager.abort_returned.connect(self.run_log.end_run)
 
     def _setup_ui(self) -> None:
         super()._setup_ui()
@@ -153,9 +166,15 @@ class RippleWindow(ManagedWindowBase):
         self._clear_prompt()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        """Stop showing the log in the window that closes."""
+        """Stop showing and saving the log of the window that closes."""
         logging.getLogger().removeHandler(self.log_widget.handler)
+        logging.getLogger().removeHandler(self.run_log)
+        self.run_log.close()
         super().closeEvent(event)
+
+    def _running_results_path(self) -> Path | None:
+        experiment = self.manager.running_experiment() if self.manager.is_running() else None
+        return None if experiment is None else Path(experiment.data_filename)
 
     def _show_pause_status(self, prompt: str) -> None:
         self.statusBar().showMessage(f"Paused: {prompt}")
