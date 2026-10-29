@@ -15,6 +15,7 @@ from pymeasure.experiment import Procedure
 from pilgrim.instruments import TektronixMSO58, TektronixMSO456Measurement
 
 from .parameters import (
+    BooleanParameter,
     FloatListParameter,
     FloatParameter,
     IntegerListParameter,
@@ -122,9 +123,10 @@ class RippleProcedure(Procedure):
 
     Startup makes sure the scope measures the maximum, minimum, mean and peak-to-peak of
     ``channel``, adding the measurements it lacks to those already set up, e.g. from the front
-    panel, see :meth:`add_missing_measurements`, shows them in a results table, and shows the
-    horizontal bar cursors on ``channel`` at ``cursor_lo`` percent below and ``cursor_hi``
-    percent above ``target``, see :meth:`show_cursors`.
+    panel, see :meth:`add_missing_measurements`, shows them in a results table, and, when
+    ``use_cursor`` is set, shows the horizontal bar cursors on ``channel`` at ``cursor_lo``
+    percent below and ``cursor_hi`` percent above ``target``, see :meth:`show_cursors`;
+    otherwise it hides the cursors.
 
     No instrument here controls the load, so before the first combination and whenever the load
     changes, the procedure pauses for the user to set it: it hands a prompt such as
@@ -176,6 +178,11 @@ class RippleProcedure(Procedure):
         units="V",
         default=0,
         description="Target voltage for rail under test",
+    )
+    use_cursor = BooleanParameter(
+        "Use cursors",
+        default=True,
+        description="Show the cursors about the target on the scope, or hide them",
     )
     cursor_hi = FloatParameter(
         "Cursor high",
@@ -236,14 +243,15 @@ class RippleProcedure(Procedure):
 
     def startup(self) -> None:
         """Connect to the scope, stop acquisition, add the missing measurements of ``channel``
-        and a results table, show the cursors, and reset the measurement populations.
+        and a results table, show or hide the cursors, and reset the measurement populations.
 
         See :meth:`add_missing_measurements` for the measurements added. The results table is
-        ``RESULTS_TABLE``; one the scope shows already is kept as it is. The cursors are shown
-        on ``channel`` about ``target``, see :meth:`show_cursors`.
+        ``RESULTS_TABLE``; one the scope shows already is kept as it is. When ``use_cursor`` is
+        set, the cursors are shown on ``channel`` about ``target``, see :meth:`show_cursors`;
+        otherwise they are hidden, so a capture shows none left from an earlier run.
 
-        :raises ValueError: If a cursor level lies outside the voltages the scope shows of
-            ``channel``.
+        :raises ValueError: If ``use_cursor`` is set and a cursor level lies outside the
+            voltages the scope shows of ``channel``.
         """
         log.info("Connecting to the scope.")
         self.scope = TektronixMSO58(self.scope_resource, timeout=SCOPE_TIMEOUT)
@@ -252,7 +260,10 @@ class RippleProcedure(Procedure):
         self.scope.acquisition_enabled = False
         self.add_missing_measurements()
         self._add_results_table()
-        self.show_cursors()
+        if self.use_cursor:
+            self.show_cursors()
+        else:
+            self.hide_cursors()
         self.scope.clear_acquisitions()
         _ = self.scope.complete  # The scope clears in the background.
 
@@ -448,6 +459,11 @@ class RippleProcedure(Procedure):
             f"{self.cursor_lo} %) and {high} V (target + {self.cursor_hi} %)."
         )
         return low, high
+
+    def hide_cursors(self) -> None:
+        """Hide the cursors on the scope, wherever they are, and log it."""
+        self.scope.cursor.enabled = False
+        log.info("Cursors hidden.")
 
     def capture_file_name(self, load: int, horizontal_div: float, bandwidth: float) -> str:
         """Return the file name of the capture taken at one combination.

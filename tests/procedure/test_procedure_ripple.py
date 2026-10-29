@@ -74,8 +74,8 @@ def make_scope(
     :param events: Receives every clear, every acquisition start or stop as its value, every
         horizontal scale set, every bandwidth set with its channel number, every measurement
         added with its number, every results table added with its name, every cursor pair set
-        with its channel number and its levels, and every directory made and image saved with
-        its path.
+        with its channel number and its levels, every cursor hiding, and every directory made and
+        image saved with its path.
     :param directories: The directories that exist on the scope; making one adds it.
     :param kinds: The ``(type, source)`` of measurements by number, by default
         :func:`channel_kinds` of CH1; a number not listed is a PK2PK of CH1.
@@ -93,6 +93,7 @@ def make_scope(
     scope.cursor.set_levels.side_effect = lambda channel, low, high: events.append(
         ("set_levels", channel.id, low, high)
     )
+    type(scope.cursor).enabled = recorded_setting(events, "cursor_enabled")
 
     existing = set(directories)
 
@@ -170,6 +171,7 @@ def test_parameters_have_defaults() -> None:
     procedure = RippleProcedure()
     assert procedure.name == "ripple"
     assert procedure.scope_resource == ""
+    assert procedure.use_cursor is True
 
 
 def test_startup_connects_to_scope_resource(
@@ -218,6 +220,21 @@ def test_startup_connects_to_scope_resource(
     ]
     procedure.shutdown()
     scope.adapter.close.assert_called_once_with()
+
+
+def test_startup_hides_the_cursors_when_they_are_not_used(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope([], [], events, kinds=channel_kinds("CH3"))
+    procedure = make_started_procedure(
+        monkeypatch, scope, channel=3, target=5, cursor_lo=4, cursor_hi=5, use_cursor=False
+    )
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        procedure.startup()
+    scope.cursor.set_levels.assert_not_called()
+    assert ("cursor_enabled", False) in events
+    assert "Cursors hidden." in caplog.messages
 
 
 def make_started_procedure(
