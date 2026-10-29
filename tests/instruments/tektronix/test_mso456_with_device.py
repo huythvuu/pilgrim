@@ -714,6 +714,21 @@ def test_whole_record_population_equals_sequence_count(mso, keep, measurement, t
     assert measurement.current_population == 1
 
 
+def test_read_populations_matches_each_population_once_stopped(mso, keep, measurement):
+    keep(mso, "acquisition_enabled")
+    measurement.type = "MEAN"
+    second = mso.add_measurement(2)
+    second.source = "CH1"
+    second.type = "MAXIMUM"
+    mso.acquisition_enabled = True
+    assert wait_until(lambda: min(mso.read_populations([1, 2]).values()) >= FEW_VALUES)
+    mso.acquisition_enabled = False
+    assert mso.complete == "1"
+    populations = mso.read_populations([1, 2])
+    assert populations == {1: measurement.population, 2: second.population}
+    assert mso.check_errors() == []
+
+
 def test_population_limit_freezes_the_statistics(mso, keep, measurement):
     keep(mso, "acquisition_enabled")
     mso.acquisition_enabled = True

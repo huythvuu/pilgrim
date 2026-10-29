@@ -550,9 +550,16 @@ class TektronixMSO456(SCPIMixin, Instrument):
         adapter: Adapter | str,
         name: str = "Tektronix MSO456",
         write_termination: str = "\n",
+        read_termination: str = "\n",
         **kwargs,
     ) -> None:
-        super().__init__(adapter, name, write_termination=write_termination, **kwargs)
+        super().__init__(
+            adapter,
+            name,
+            write_termination=write_termination,
+            read_termination=read_termination,
+            **kwargs,
+        )
         # Replies are parsed as bare, full-length keywords; both states survive *RST.
         self.write("HEADer OFF")
         self.write("VERBose ON")
@@ -967,6 +974,28 @@ class TektronixMSO456(SCPIMixin, Instrument):
         self._raise_on_errors("deleting every measurement")
         for measurement in list(self.measurements.values()):
             self.remove_child(measurement)
+
+    def read_populations(self, numbers: Sequence[int]) -> dict[int, int]:
+        """Read the populations of several measurements in a single query.
+
+        The population queries of the measurements are concatenated into one message, which the
+        instrument answers with one reply, so all the populations come from the same moment and
+        take a single exchange. Each is the ``population`` of its measurement, the number of
+        values accumulated over all acquisitions. Pass only listed measurement numbers, since
+        querying one the instrument does not have creates that measurement silently.
+
+        :param numbers: The measurement numbers, e.g. ``[1, 3]``.
+        :returns: The populations by measurement number, in the order given.
+        :raises ValueError: If no number is given, or the reply does not hold one population per
+            number.
+        """
+        if not numbers:
+            raise ValueError("At least one measurement number is needed.")
+        query = ";:".join(f"MEASUrement:MEAS{n}:RESUlts:ALLAcqs:POPUlation?" for n in numbers)
+        replies = self.ask(query).strip().split(";")
+        if len(replies) != len(numbers):
+            raise ValueError(f"Expected {len(numbers)} populations, got {';'.join(replies)!r}.")
+        return {number: int(reply) for number, reply in zip(numbers, replies, strict=True)}
 
     def add_results_table(self, name: str) -> None:
         """Add a measurement results table to the display.

@@ -609,6 +609,38 @@ def test_delete_all_measurements_empties_the_collection():
         assert not hasattr(mso, "meas_2")
 
 
+def test_read_populations_concatenates_the_queries():
+    query = (
+        "MEASUrement:MEAS1:RESUlts:ALLAcqs:POPUlation?;"
+        ":MEASUrement:MEAS3:RESUlts:ALLAcqs:POPUlation?"
+    )
+    with expected_protocol(TektronixMSO456, [*CONNECT, (query, "301;29825")]) as mso:
+        assert mso.read_populations([1, 3]) == {1: 301, 3: 29825}
+
+
+def test_read_populations_of_one_measurement():
+    query = "MEASUrement:MEAS2:RESUlts:ALLAcqs:POPUlation?"
+    with expected_protocol(TektronixMSO456, [*CONNECT, (query, "0")]) as mso:
+        assert mso.read_populations([2]) == {2: 0}
+
+
+def test_read_populations_without_numbers_raises_without_querying():
+    with expected_protocol(TektronixMSO456, CONNECT) as mso, pytest.raises(ValueError):
+        mso.read_populations([])
+
+
+def test_read_populations_raises_when_a_population_is_missing():
+    query = (
+        "MEASUrement:MEAS1:RESUlts:ALLAcqs:POPUlation?;"
+        ":MEASUrement:MEAS2:RESUlts:ALLAcqs:POPUlation?"
+    )
+    with (
+        expected_protocol(TektronixMSO456, [*CONNECT, (query, "301")]) as mso,
+        pytest.raises(ValueError, match="Expected 2 populations, got '301'"),
+    ):
+        mso.read_populations([1, 2])
+
+
 def test_delete_all_measurements_with_none_added():
     protocol = [*CONNECT, ("MEASUrement:DELETEALL", None), *NO_EVENT]
     with expected_protocol(TektronixMSO456, protocol) as mso:
