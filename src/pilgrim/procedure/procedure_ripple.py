@@ -64,6 +64,8 @@ UNDERSHOOT_COLUMN = "Undershoot (%)"
 # The measurement types of the output voltage channel the scope must have; startup adds the
 # missing ones.
 REQUIRED_TYPES = ["MAXIMUM", "MINIMUM", "MEAN", "PK2PK"]
+#: The decimal places the results read from the scope and derived from them are rounded to.
+RESULT_DECIMALS = 5
 
 
 class Result(NamedTuple):
@@ -597,7 +599,9 @@ class RippleProcedure(Procedure):
         """Read the statistics of :attr:`RESULTS` from the scope, derive the rest, and log them.
 
         The overshoot is the deviation of Max Vmax from Mean Vmean and the undershoot that of
-        Min Vmin, each as a percentage of Mean Vmean, see :func:`deviation_percent`.
+        Min Vmin, each as a percentage of Mean Vmean, see :func:`deviation_percent`. The
+        percentages are derived from the values as read, and every value is then rounded to
+        :data:`RESULT_DECIMALS` decimal places.
 
         :param recorded: The measurements of ``channel`` by type.
         :param populations: The populations by measurement number the statistics come from.
@@ -619,7 +623,7 @@ class RippleProcedure(Procedure):
         log.info(f"Overshoot {overshoot} %, undershoot {undershoot} %.")
         results[OVERSHOOT_COLUMN] = overshoot
         results[UNDERSHOOT_COLUMN] = undershoot
-        return results
+        return {column: round(value, RESULT_DECIMALS) for column, value in results.items()}
 
     def _attach_measurements(self) -> list[TektronixMSO456Measurement]:
         """Return interfaces to the measurements on the scope, in the order the scope lists them.

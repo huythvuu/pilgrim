@@ -472,6 +472,42 @@ def test_execute_acquires_until_population_at_every_combination(
     ]
 
 
+def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPatch) -> None:
+    scope = make_scope(DEFAULT_NAMES, repeat(300), [])
+    add_child = scope.add_child.side_effect
+    # The measurements are attached at startup, so the readings are set as they are added.
+    readings = {1: ("mean", 0.123456789), 2: ("maximum", 1.0000049)}
+    readings |= {3: ("minimum", -2.9999951), 4: ("mean", 1.5e-7)}
+
+    def add_child_with_readings(cls: type, number: int, **kwargs: object) -> MagicMock:
+        measurement = add_child(cls, number, **kwargs)
+        statistic, value = readings[number]
+        setattr(measurement, statistic, value)
+        return measurement
+
+    scope.add_child.side_effect = add_child_with_readings
+    procedure = make_running_procedure(monkeypatch, scope, vin=12, pop_min=300, **ONE_COMBINATION)
+    procedure.execute()
+    emit: Any = procedure.emit
+    rows = [call.args[1] for call in emit.call_args_list if call.args[0] == "results"]
+    # The percentages are derived from the values as read (710.00398... % and
+    # 2529.99605... %), then rounded like them.
+    assert rows == [
+        {
+            "Vin (V)": 12,
+            "Load": 0,
+            "Horizontal Div (s)": 1e-6,
+            "Bandwidth (Hz)": 20e6,
+            "Mean Vmean (V)": 0.12346,
+            "Max Vmax (V)": 1.0,
+            "Min Vmin (V)": -3.0,
+            "Mean Vpk2pk (V)": 0.0,
+            "Overshoot (%)": 710.00398,
+            "Undershoot (%)": 2529.99605,
+        }
+    ]
+
+
 def test_results_rows_hold_every_data_column(monkeypatch: pytest.MonkeyPatch) -> None:
     scope = make_scope(DEFAULT_NAMES, repeat(300), [])
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300)
