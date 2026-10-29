@@ -565,10 +565,6 @@ class TransientProcedure(Procedure):
             measurement = scope.add_measurement(number)
             measurement.type = spec.measurement_type
             measurement.source = spec.signal.source
-            # The statistics freeze at the limit, so every row holds exactly pop_min values
-            # however many a per-cycle type adds per acquisition.
-            measurement.population_limit = self.pop_min
-            measurement.population_limit_enabled = True
 
         scope.trigger_type = "EDGE"
         scope.trigger_source = self.IOUT.source
@@ -585,6 +581,8 @@ class TransientProcedure(Procedure):
         Call once the AFG output is on, since the midpoint is taken from the signal present.
         """
         scope = self.scope
+        # A previous run leaves acquisition stopped, and the midpoint needs a live signal.
+        scope.acquisition_enabled = True
         scope.set_trigger_level_to_midpoint()
         # The scope silently drops set commands sent within about 2 s of SETLevel.
         _ = scope.complete
@@ -606,22 +604,32 @@ class TransientProcedure(Procedure):
         log.debug(f"Scope horizontal scale set to {self.scope.horizontal_scale} s/div.")
 
     def _restart_statistics(self) -> None:
-        """Clear the scope's acquisitions, so the measurement statistics start afresh."""
+        """Clear the scope's acquisitions and start acquiring, so the statistics start afresh."""
+        # Starting acquisition carries the statistics on, so they are cleared first.
         self.scope.clear_acquisitions()
         _ = self.scope.complete  # The scope clears in the background.
+        self.scope.acquisition_enabled = True
 
     def _wait_for_population(self) -> bool:
-        """Wait until every scope measurement has collected ``pop_min`` values.
+        """Wait until every scope measurement has collected ``pop_min`` values, then stop.
+
+        Acquisition stops once the populations fill or the procedure is asked to stop, so the
+        statistics and the screen hold still while they are read. A per-cycle measurement type
+        adds several values per acquisition, so a population can end above ``pop_min``.
 
         :returns: Whether the populations filled; False when the procedure was asked to stop
             first.
         """
         measurements = list(self.scope.measurements.values())
+        filled = False
         while not self.should_stop():
             if all(_population(measurement) >= self.pop_min for measurement in measurements):
-                return True
+                filled = True
+                break
             sleep(POLL_INTERVAL)
-        return False
+        self.scope.acquisition_enabled = False
+        _ = self.scope.complete  # Lets the stop take effect before the statistics are read.
+        return filled
 
     def _read_measurements(self) -> dict[str, float]:
         """Read every statistic in :attr:`STATISTICS` of every scope measurement.
