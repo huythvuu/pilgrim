@@ -24,6 +24,9 @@ POLL_INTERVAL = 0.1
 # before a warning names them; a measurement that collects no values would otherwise hold
 # the acquisition silently.
 STALL_WARNING_INTERVAL = 10.0
+# The VISA timeout of the scope in ms; the scope can take seconds to answer while it applies a
+# setting or saves a capture, longer than the VISA default.
+SCOPE_TIMEOUT = 10_000
 
 
 class ScopeEvent(IntEnum):
@@ -166,7 +169,7 @@ class RippleProcedure(Procedure):
     def startup(self) -> None:
         """Connect to the scope, stop acquisition, and reset the measurement populations."""
         log.info("Connecting to the scope.")
-        self.scope = TektronixMSO58(self.scope_resource)
+        self.scope = TektronixMSO58(self.scope_resource, timeout=SCOPE_TIMEOUT)
         state = "acquiring" if self.scope.acquisition_enabled else "stopped"
         log.info(f"Connected to {self.scope.id}, found {state}.")
         self.scope.acquisition_enabled = False
@@ -198,6 +201,7 @@ class RippleProcedure(Procedure):
         for measurement in measurements:
             _log_measurement(measurement, self.pop_min)
         peak_to_peak = self._peak_to_peak_measurement(measurements)
+        numbers = [_measurement_number(measurement) for measurement in measurements]
         scope_directory = self._make_scope_capture_dir()
         local_directory = self.local_capture_directory
         local_directory.mkdir(parents=True, exist_ok=True)
@@ -225,12 +229,16 @@ class RippleProcedure(Procedure):
             self.scope.clear_acquisitions()
             _ = self.scope.complete  # The scope clears in the background.
             self.scope.acquisition_enabled = True
-            populations = self._wait_for_population(measurements)
+            filled = self._wait_for_population(numbers)
             self.scope.acquisition_enabled = False
-            if populations is None:
+            if not filled:
                 log.info("Ripple measurement stopped.")
                 return
             _ = self.scope.complete  # Lets the stop take effect before the maximum is read.
+            # Acquisitions in flight when the populations filled still add values, so the
+            # populations the maximum comes from are read once acquisition has stopped.
+            populations = self.scope.read_populations(numbers)
+            log.info(f"Acquisition stopped at {_format_populations(populations)}.")
             maximum = _number(peak_to_peak.maximum, f"{PEAK_TO_PEAK} maximum")
             population = populations[_measurement_number(peak_to_peak)]
             log.info(
@@ -415,18 +423,16 @@ class RippleProcedure(Procedure):
                 )
         return [scope.measurements[number] for number in numbers]
 
-    def _wait_for_population(
-        self, measurements: list[TektronixMSO456Measurement]
-    ) -> dict[int, int] | None:
+    def _wait_for_population(self, numbers: list[int]) -> bool:
         """Wait until every measurement has collected ``pop_min`` values.
 
-        Every poll reads every measurement and logs the populations at debug level. Once the
-        populations still short of the minimum have not changed for ``STALL_WARNING_INTERVAL``
-        seconds, a warning names them.
+        Every poll reads the populations of all the measurements in a single query and logs them
+        at debug level. Once the populations still short of the minimum have not changed for
+        ``STALL_WARNING_INTERVAL`` seconds, a warning names them.
 
-        :param measurements: The measurements on the scope.
-        :returns: The populations by measurement number once they all filled; None when the
-            procedure was asked to stop first.
+        :param numbers: The numbers of the measurements on the scope.
+        :returns: Whether the populations filled; False when the procedure was asked to stop
+            first.
         """
         started = perf_counter()
         previous_short: dict[int, int] | None = None
@@ -434,10 +440,7 @@ class RippleProcedure(Procedure):
         polls = 0
         while not self.should_stop():
             polled = perf_counter()
-            populations = {
-                _measurement_number(measurement): _population(measurement)
-                for measurement in measurements
-            }
+            populations = self.scope.read_populations(numbers)
             now = perf_counter()
             polls += 1
             log.debug(
@@ -450,7 +453,7 @@ class RippleProcedure(Procedure):
                     f"Populations filled in {now - started:.1f} s over {polls} polls: "
                     f"{_format_populations(populations)}."
                 )
-                return populations
+                return True
             # Only the short measurements count as progress: a filled one keeps growing while a
             # stuck one holds the acquisition.
             if short != previous_short:
@@ -464,7 +467,7 @@ class RippleProcedure(Procedure):
                 )
                 unchanged_since = now
             sleep(POLL_INTERVAL)
-        return None
+        return False
 
 
 def _measurement_numbers(names: object) -> list[int]:
@@ -503,19 +506,6 @@ def _number(value: object, name: str) -> float:
     if not isinstance(value, int | float):
         raise TypeError(f"{name} must be a number, not {value!r}.")
     return float(value)
-
-
-def _population(measurement: TektronixMSO456Measurement) -> int:
-    """Return the population of a scope measurement.
-
-    :param measurement: The measurement.
-    :returns: The number of values its statistics hold.
-    :raises TypeError: If the driver returns anything but an int.
-    """
-    population: object = measurement.population
-    if not isinstance(population, int):
-        raise TypeError(f"Population must be an int, not {population!r}.")
-    return population
 
 
 def _format_populations(populations: dict[int, int]) -> str:

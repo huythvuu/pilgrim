@@ -25,12 +25,12 @@ def make_scope() -> MagicMock:
     scope.channels = {number: MagicMock() for number in range(1, 9)}
     scope.check_errors.return_value = []
     scope.read_file.return_value = b"capture"
+    scope.read_populations.side_effect = lambda numbers: dict.fromkeys(numbers, 300)
 
     def add_child(cls: type, number: int, **kwargs: object) -> MagicMock:
         measurement = MagicMock()
         measurement.id = number
         measurement.type, measurement.source = "PK2PK", "CH1"
-        measurement.population = 300
         measurement.maximum = 0.01
         measurement.uses_global_population_limit = False
         measurement.population_limit_enabled = False
@@ -45,7 +45,7 @@ def make_scope() -> MagicMock:
 @pytest.fixture
 def window(qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RippleWindow:
     """Return a window set to run two loads at one scale and bandwidth against a mock scope."""
-    monkeypatch.setattr(procedure_ripple, "TektronixMSO58", lambda resource: make_scope())
+    monkeypatch.setattr(procedure_ripple, "TektronixMSO58", lambda resource, **kwargs: make_scope())
     window = RippleWindow()
     qtbot.addWidget(window)
     window.directory = str(tmp_path)

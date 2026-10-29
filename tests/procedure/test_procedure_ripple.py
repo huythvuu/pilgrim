@@ -50,8 +50,8 @@ def make_scope(
     population limit.
 
     :param names: The measurement names the scope lists, e.g. ``["MEAS1"]``.
-    :param populations: The populations read, one per read; every measurement reads a list
-        from its start, while an iterator is shared between them.
+    :param populations: The populations read: every ``read_populations`` takes one per number
+        asked for, in the order asked.
     :param events: Receives every clear, every acquisition start or stop as its value, every
         horizontal scale set, every bandwidth set with its channel number, and every directory
         made and image saved with its path.
@@ -84,11 +84,12 @@ def make_scope(
     scope.save_image.side_effect = lambda path: events.append(("save_image", path))
     scope.read_file.side_effect = lambda path: f"image of {path}".encode()
     scope.check_errors.return_value = []
+    counts = iter(populations)
+    scope.read_populations.side_effect = lambda numbers: {n: next(counts) for n in numbers}
 
     def add_child(cls: type, number: int, **kwargs: object) -> MagicMock:
         measurement = MagicMock()
         measurement.id = number
-        type(measurement).population = PropertyMock(side_effect=populations)
         measurement.type, measurement.source = (kinds or {}).get(number, ("PK2PK", "CH1"))
         measurement.maximum = number / 100
         measurement.uses_global_population_limit = False
@@ -143,7 +144,7 @@ def test_startup_connects_to_scope_resource(
     procedure.refresh_parameters()
     with caplog.at_level(logging.INFO, logger=LOGGER):
         procedure.startup()
-    scope_class.assert_called_once_with("TCPIP::scope::INSTR")
+    scope_class.assert_called_once_with("TCPIP::scope::INSTR", timeout=10_000)
     connected = "Connected to TEKTRONIX,MSO58,C031408,CF:91.1CT FV:1.34.8, found acquiring."
     assert connected in caplog.messages
     assert scope_class.return_value.acquisition_enabled is False
@@ -186,7 +187,8 @@ def test_execute_acquires_until_population_at_every_combination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[tuple[Any, ...]] = []
-    populations = iter([0, 299, 300, 100, 300])
+    # Each combination polls until full, then reads the populations once more after the stop.
+    populations = iter([0, 299, 300, 310, 100, 300, 305])
     scope = make_scope(["MEAS1"], populations, events)
     procedure = make_running_procedure(monkeypatch, scope, vin=12, pop_min=300, **TWO_COMBINATIONS)
     procedure.execute()
@@ -229,7 +231,7 @@ def test_execute_records_first_peak_to_peak_of_the_channel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kinds = {1: ("MAXIMUM", "CH2"), 2: ("PK2PK", "CH1"), 3: ("PK2PK", "CH2"), 4: ("PK2PK", "CH2")}
-    scope = make_scope(["MEAS1", "MEAS2", "MEAS3", "MEAS4"], [300] * 4, [], kinds=kinds)
+    scope = make_scope(["MEAS1", "MEAS2", "MEAS3", "MEAS4"], repeat(300), [], kinds=kinds)
     procedure = make_running_procedure(
         monkeypatch, scope, channel=2, pop_min=300, **TWO_COMBINATIONS
     )
@@ -255,15 +257,16 @@ def test_execute_without_peak_to_peak_of_the_channel_raises(
 
 
 def test_execute_waits_for_every_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
-    scope = make_scope(["MEAS1", "MEAS3"], [300, 300, 300, 300], [])
+    scope = make_scope(["MEAS1", "MEAS3"], repeat(300), [])
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **TWO_COMBINATIONS)
     procedure.execute()
     assert set(scope.measurements) == {1, 3}
+    assert all(call.args == ([1, 3],) for call in scope.read_populations.call_args_list)
 
 
 def test_execute_sets_scale_and_bandwidth_of_the_channel(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[tuple[Any, ...]] = []
-    scope = make_scope(["MEAS1"], [300] * 4, events, kinds={1: ("PK2PK", "CH3")})
+    scope = make_scope(["MEAS1"], repeat(300), events, kinds={1: ("PK2PK", "CH3")})
     procedure = make_running_procedure(
         monkeypatch,
         scope,
@@ -428,7 +431,7 @@ def test_execute_makes_missing_capture_directories(
     monkeypatch: pytest.MonkeyPatch, directories: list[str], made: list[str]
 ) -> None:
     events: list[tuple[Any, ...]] = []
-    scope = make_scope(["MEAS1"], [300, 300], events, directories)
+    scope = make_scope(["MEAS1"], repeat(300), events, directories)
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **TWO_COMBINATIONS)
     procedure.execute()
     # The directories are made once, before the first combination.
@@ -452,7 +455,7 @@ def test_execute_moves_captures_to_local_directory(
         assert (local_directory / path.rsplit("/", 1)[1]).exists()
         deleted.append(path)
 
-    scope = make_scope(["MEAS1"], [300, 300], [])
+    scope = make_scope(["MEAS1"], repeat(300), [])
     scope.delete_file.side_effect = delete_file
     parameters: dict[str, object] = {"vin": 12, "pop_min": 300, **TWO_COMBINATIONS}
     if local_capture_dir is not None:
@@ -467,7 +470,7 @@ def test_execute_moves_captures_to_local_directory(
 
 
 def test_capture_stays_on_scope_when_transfer_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    scope = make_scope(["MEAS1"], [300], [])
+    scope = make_scope(["MEAS1"], repeat(300), [])
     scope.read_file.side_effect = ValueError("Tektronix MSO58 rejected reading file: 256")
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **TWO_COMBINATIONS)
     with pytest.raises(ValueError, match="256"):
@@ -476,7 +479,7 @@ def test_capture_stays_on_scope_when_transfer_fails(monkeypatch: pytest.MonkeyPa
 
 
 def test_execute_raises_when_capture_is_not_saved(monkeypatch: pytest.MonkeyPatch) -> None:
-    scope = make_scope(["MEAS1"], [300], [])
+    scope = make_scope(["MEAS1"], repeat(300), [])
     scope.check_errors.return_value = [(200, "Unable to complete the save operation")]
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **TWO_COMBINATIONS)
     with pytest.raises(ValueError, match="could not save"):
@@ -529,8 +532,9 @@ ONE_COMBINATION = {"loads": [0], "horizontal_divs": [1e-6], "bandwidths": [20e6]
 def test_execute_logs_every_population_per_poll(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # A shared iterator: every poll reads both measurements, in the order the scope lists them.
-    populations = iter([0, 100, 300, 300])
+    # Every read takes both measurements, in the order the scope lists them; the last read
+    # follows the stop.
+    populations = iter([0, 100, 300, 300, 310, 320])
     scope = make_scope(["MEAS1", "MEAS3"], populations, [])
     scope.acquisition_count = 1234
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
@@ -545,14 +549,15 @@ def test_execute_logs_every_population_per_poll(
     assert all(re.fullmatch(r".*, read in \d+\.\d\d s\.", poll) for poll in polls)
     timed = [re.sub(r"\d+\.\d s", "N s", message) for message in caplog.messages]
     assert "Populations filled in N s over 2 polls: MEAS1=300, MEAS3=300." in timed
-    assert "PK2PK maximum 0.01 V from 300 values over 1234 acquisitions." in caplog.messages
+    assert "Acquisition stopped at MEAS1=310, MEAS3=320." in caplog.messages
+    assert "PK2PK maximum 0.01 V from 310 values over 1234 acquisitions." in caplog.messages
 
 
 def test_execute_warns_when_short_populations_stall(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # MEAS1 is filled and keeps growing, while MEAS2 is stuck at 0 until the last poll.
-    populations = iter([300, 0, 400, 0, 500, 0, 600, 300])
+    populations = iter([300, 0, 400, 0, 500, 0, 600, 300, 610, 305])
     scope = make_scope(["MEAS1", "MEAS2"], populations, [])
     procedure = make_running_procedure(monkeypatch, scope, pop_min=300, **ONE_COMBINATION)
     clock = 0.0
@@ -611,7 +616,7 @@ def test_execute_logs_the_measurements_found(
 def test_execute_logs_capture_save_and_transfer(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    scope = make_scope(["MEAS1"], [300], [])
+    scope = make_scope(["MEAS1"], repeat(300), [])
     procedure = make_running_procedure(monkeypatch, scope, vin=12, pop_min=300, **ONE_COMBINATION)
     with caplog.at_level(logging.INFO, logger=LOGGER):
         procedure.execute()
