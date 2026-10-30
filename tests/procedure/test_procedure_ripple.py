@@ -20,7 +20,7 @@ LOGGER = "pilgrim.procedure.procedure_ripple"
 #: The measurements the scope lists by default: the ones of CH1 that execute records.
 DEFAULT_NAMES = ["MEAS1", "MEAS2", "MEAS3", "MEAS4"]
 #: The columns read from the scope measurements.
-RESULT_COLUMNS = ["Mean Vmean (V)", "Max Vmax (V)", "Min Vmin (V)", "Mean Vpk2pk (V)"]
+RESULT_COLUMNS = ["Mean Vmean (V)", "Max Vmax (V)", "Min Vmin (V)", "Mean Vpk2pk (mV)"]
 
 
 def channel_kinds(source: str) -> dict[int, tuple[str, str]]:
@@ -515,22 +515,22 @@ def test_execute_acquires_until_population_at_every_combination(
     emit: Any = procedure.emit
     row = {"Vin (V)": 12, "Load (A)": 0, "Horizontal Div (s)": 1e-6}
     # MEAS1 to MEAS4 give a mean of 0.5 V, a maximum of 2 V, a minimum of -3 V and a mean
-    # peak-to-peak of 2 V, which lies 300 % of the mean away from it.
+    # peak-to-peak of 2 V, recorded in mV, which is 400 % of the mean.
     values = {
         "Mean Vmean (V)": 0.5,
         "Max Vmax (V)": 2.0,
         "Min Vmin (V)": -3.0,
-        "Mean Vpk2pk (V)": 2.0,
-        "Ripple (%)": 300.0,
+        "Mean Vpk2pk (mV)": 2000.0,
+        "Ripple (%)": 400.0,
     }
     captures = {
         bandwidth: capture_hyperlink(Path("captures") / f"12Vin ripple 0A 1us {text}.png")
         for bandwidth, text in [(20e6, "20MHz"), (1e9, "1GHz")]
     }
     assert [call.args for call in emit.call_args_list] == [
-        ("results", {**row, "Bandwidth (Hz)": 20e6, **values, "Capture": captures[20e6]}),
+        ("results", {**row, "Bandwidth (kHz)": 20e3, **values, "Capture": captures[20e6]}),
         ("progress", 50.0),
-        ("results", {**row, "Bandwidth (Hz)": 1e9, **values, "Capture": captures[1e9]}),
+        ("results", {**row, "Bandwidth (kHz)": 1e6, **values, "Capture": captures[1e9]}),
         ("progress", 100.0),
     ]
 
@@ -553,19 +553,19 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
     procedure.execute()
     emit: Any = procedure.emit
     rows = [call.args[1] for call in emit.call_args_list if call.args[0] == "results"]
-    # The ripple is derived from the values as read (90.00006390... %), then rounded like
-    # them; the rounded values would give 89.9968 %.
+    # The ripple is derived from the values as read (9.99993609... %), then rounded like
+    # them; the rounded values would give 9.99968 %.
     assert rows == [
         {
             "Vin (V)": 12,
             "Load (A)": 0,
             "Horizontal Div (s)": 1e-6,
-            "Bandwidth (Hz)": 20e6,
+            "Bandwidth (kHz)": 20e3,
             "Mean Vmean (V)": 0.12346,
             "Max Vmax (V)": 1.0,
             "Min Vmin (V)": -3.0,
-            "Mean Vpk2pk (V)": 0.01235,
-            "Ripple (%)": 90.00006,
+            "Mean Vpk2pk (mV)": 12.3456,
+            "Ripple (%)": 9.99994,
             "Capture": capture_hyperlink(Path("captures") / "12Vin ripple 0A 1us 20MHz.png"),
         }
     ]
@@ -608,7 +608,7 @@ def test_execute_records_first_measurement_of_each_type_of_the_channel(
         for call in emit.call_args_list
         if call.args[0] == "results"
     ]
-    assert values == [[1.5, 4.0, -6.0, 4.0], [1.5, 4.0, -6.0, 4.0]]
+    assert values == [[1.5, 4.0, -6.0, 4000.0], [1.5, 4.0, -6.0, 4000.0]]
 
 
 @pytest.mark.parametrize("missing", ["MEAN", "MAXIMUM", "MINIMUM", "PK2PK"])
@@ -1017,11 +1017,11 @@ def test_format_with_si_prefix(value: float, unit: str, text: str) -> None:
 @pytest.mark.parametrize(
     ("pk2pk", "mean", "percent"),
     [
-        (0.25, 5.0, 95.0),
-        (2.0, 0.5, 300.0),
-        (5.0, 5.0, 0.0),
+        (0.25, 5.0, 5.0),
+        (2.0, 0.5, 400.0),
+        (5.0, 5.0, 100.0),
         # The mean keeps its sign.
-        (0.6, -12.0, -105.0),
+        (0.6, -12.0, -5.0),
     ],
 )
 def test_ripple_percent(pk2pk: float, mean: float, percent: float) -> None:
@@ -1068,7 +1068,7 @@ def test_execute_logs_every_population_per_poll(
         "MINIMUM minimum -3.0 V from 330 values, PK2PK mean 2.0 V from 340 values, "
         "over 1234 acquisitions."
     ) in caplog.messages
-    assert "Ripple 300.0 %." in caplog.messages
+    assert "Ripple 400.0 %." in caplog.messages
 
 
 def test_execute_warns_when_short_populations_stall(

@@ -53,11 +53,11 @@ class ScopeEvent(IntEnum):
 VIN_COLUMN = "Vin (V)"
 LOAD_COLUMN = "Load (A)"
 HORIZONTAL_DIV_COLUMN = "Horizontal Div (s)"
-BANDWIDTH_COLUMN = "Bandwidth (Hz)"
+BANDWIDTH_COLUMN = "Bandwidth (kHz)"
 VMEAN_COLUMN = "Mean Vmean (V)"
 VMAX_COLUMN = "Max Vmax (V)"
 VMIN_COLUMN = "Min Vmin (V)"
-PK2PK_COLUMN = "Mean Vpk2pk (V)"
+PK2PK_COLUMN = "Mean Vpk2pk (mV)"
 RIPPLE_COLUMN = "Ripple (%)"
 CAPTURE_COLUMN = "Capture"
 # The measurement types of the output voltage channel the scope must have; startup adds the
@@ -77,6 +77,8 @@ class Result(NamedTuple):
     #: The statistic of that measurement over all acquisitions, as the measurement interface
     #: names it.
     statistic: str
+    #: The factor from the volts the scope reads to the unit of the column.
+    scale: float = 1.0
 
 
 #: The results read from the scope at every combination, in column order; the ripple column
@@ -85,7 +87,7 @@ RESULTS = [
     Result(VMEAN_COLUMN, "MEAN", "mean"),
     Result(VMAX_COLUMN, "MAXIMUM", "maximum"),
     Result(VMIN_COLUMN, "MINIMUM", "minimum"),
-    Result(PK2PK_COLUMN, "PK2PK", "mean"),
+    Result(PK2PK_COLUMN, "PK2PK", "mean", scale=1e3),
 ]
 # The results table startup shows on the scope, which lists every measurement with its statistics.
 RESULTS_TABLE = "TABLE1"
@@ -318,25 +320,13 @@ class RippleProcedure(Procedure):
     def execute(self) -> None:
         """Acquire at every combination until each scope measurement has ``pop_min`` values.
 
-        The measurements are the ones on the scope, those set up e.g. from its front panel and
-        those :meth:`startup` added. Before the first combination and whenever the load changes,
-        the procedure pauses until the user has set the load, see :meth:`pause`. At every
-        combination, the scope's horizontal scale and the bandwidth limit of ``channel`` are set,
-        the statistics restart, acquisition runs until every measurement has collected
-        ``pop_min`` values, and then stops. The scope rounds both settings to ones it supports.
-        A capture of the screen is then saved on the scope in ``scope_capture_dir`` under
-        :meth:`capture_file_name`, and moved to :attr:`capture_directory` on this computer,
-        so the scope keeps none of the captures; both directories are created first if they do
-        not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
-        the mean of the first MEAN measurement of ``channel`` that the scope lists, the maximum
-        of its first MAXIMUM measurement, the minimum of its first MINIMUM measurement and the
-        mean of its first PK2PK measurement, each over all acquisitions, the ripple computed
-        from them, see :func:`ripple_percent`, and a link to the capture that opens it from
-        Excel, see :func:`capture_hyperlink`. Stops early when asked to.
+        The procedure pauses for the user to set the load whenever it changes, see
+        :meth:`pause`. Each combination sets the horizontal scale and bandwidth limit, acquires
+        until the measurements are populated, saves a screen capture to :attr:`capture_directory`
+        and records one row of :attr:`DATA_COLUMNS`. Stops early when asked to.
 
-        :raises ValueError: If the scope has no measurements or no MEAN, MAXIMUM, MINIMUM or
-            PK2PK measurement of ``channel``, which :meth:`startup` adds, or a capture could
-            not be saved.
+        :raises ValueError: If the scope lacks a MEAN, MAXIMUM, MINIMUM or PK2PK measurement of
+            ``channel``, or a capture could not be saved.
         """
         measurements = self._attach_measurements()
         if not measurements:
@@ -401,7 +391,7 @@ class RippleProcedure(Procedure):
                     VIN_COLUMN: self.vin,
                     LOAD_COLUMN: load,
                     HORIZONTAL_DIV_COLUMN: horizontal_div,
-                    BANDWIDTH_COLUMN: bandwidth,
+                    BANDWIDTH_COLUMN: bandwidth / 1e3,
                     **results,
                     CAPTURE_COLUMN: capture_hyperlink(
                         local_path.relative_to(self.results_directory)
@@ -659,26 +649,27 @@ class RippleProcedure(Procedure):
     ) -> dict[str, float]:
         """Read the statistics of :attr:`RESULTS` from the scope, derive the rest, and log them.
 
-        The ripple is the deviation of Mean Vpk2pk from Mean Vmean as a percentage of Mean
-        Vmean, see :func:`ripple_percent`. It is derived from the values as read, and every
-        value is then rounded to :data:`RESULT_DECIMALS` decimal places.
+        The ripple is Mean Vpk2pk as a percentage of Mean Vmean, see :func:`ripple_percent`.
+        It is derived from the values as read, in volts; every value is then scaled to the unit
+        of its column and rounded to :data:`RESULT_DECIMALS` decimal places.
 
         :param recorded: The measurements of ``channel`` by type.
         :param populations: The populations by measurement number the statistics come from.
         :returns: The values by column, in the order of :attr:`DATA_COLUMNS`.
         """
-        results: dict[str, float] = {}
+        volts: dict[str, float] = {}
         read: list[str] = []
         for result in RESULTS:
             measurement = recorded[result.measurement_type]
             name = f"{result.measurement_type} {result.statistic}"
             value = _number(getattr(measurement, result.statistic), name)
-            results[result.column] = value
+            volts[result.column] = value
             population = populations[_measurement_number(measurement)]
             read.append(f"{name} {value} V from {population} values")
         log.info(f"{', '.join(read)}, over {self.scope.acquisition_count} acquisitions.")
-        ripple = ripple_percent(results[PK2PK_COLUMN], results[VMEAN_COLUMN])
+        ripple = ripple_percent(volts[PK2PK_COLUMN], volts[VMEAN_COLUMN])
         log.info(f"Ripple {ripple} %.")
+        results = {result.column: volts[result.column] * result.scale for result in RESULTS}
         results[RIPPLE_COLUMN] = ripple
         return {column: round(value, RESULT_DECIMALS) for column, value in results.items()}
 
@@ -776,18 +767,18 @@ def cursor_levels(target: float, below: float, above: float) -> tuple[float, flo
 
 
 def ripple_percent(pk2pk: float, mean: float) -> float:
-    """Return the ripple of a rail, how far its peak-to-peak voltage lies from its mean.
+    """Return the ripple of a rail, its peak-to-peak voltage as a percentage of its mean.
 
-    The deviation is a percentage of the mean: a peak-to-peak voltage of 0.25 V on a mean of
-    5 V gives 95 %. The mean keeps its sign, so a negative rail gives a negative percentage.
+    A peak-to-peak voltage of 0.25 V on a mean of 5 V gives 5 %. The mean keeps its sign, so
+    a negative rail gives a negative percentage.
 
-    :param pk2pk: The peak-to-peak voltage.
-    :param mean: The mean voltage the peak-to-peak voltage is compared to.
-    :returns: ``abs(mean - pk2pk) / mean * 100``, NaN when the mean is zero.
+    :param pk2pk: The peak-to-peak voltage in volts.
+    :param mean: The mean voltage in volts.
+    :returns: ``pk2pk / mean * 100``, NaN when the mean is zero.
     """
     if mean == 0:
         return math.nan
-    return abs(mean - pk2pk) / mean * 100
+    return pk2pk / mean * 100
 
 
 def _has_event(exc: ValueError, event: ScopeEvent) -> bool:
