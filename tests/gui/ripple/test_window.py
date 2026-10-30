@@ -7,14 +7,14 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from pymeasure.display.Qt import QtWidgets
+from pymeasure.display.Qt import QtCore, QtWidgets
 from pymeasure.experiment import Procedure
 from pytestqt.qtbot import QtBot
 
 from pilgrim.gui.ripple import RippleWindow
 from pilgrim.gui.ripple.components import MessageWidget, RippleInputsWidget
 from pilgrim.gui.ripple.components.message import PAUSING_TEXT, RUNNING_TEXT
-from pilgrim.gui.ripple.window import DEFAULT_FILENAME
+from pilgrim.gui.ripple.window import DEFAULT_FILENAME, SPLITTER_HANDLE_WIDTH
 from pilgrim.procedure import RippleProcedure, procedure_ripple
 from pilgrim.procedure.procedure_ripple import PAUSE_PROMPT
 
@@ -103,9 +103,30 @@ def test_is_built_for_the_ripple_procedure(window: RippleWindow) -> None:
     assert isinstance(window.message_widget, MessageWidget)
     assert not window.message_widget.is_prompting
     tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
-    assert tabs == ["Results Table", "Captures", "Results Graph", "Experiment Log"]
+    assert tabs == ["Results Table", "Captures", "Experiment Log"]
     assert window.filename == DEFAULT_FILENAME
     assert window.windowTitle() == "Ripple capture"
+
+
+def test_tabs_and_browser_split_the_height_through_a_draggable_handle(
+    qtbot: QtBot, window: RippleWindow
+) -> None:
+    splitter = window.splitter
+    assert splitter.orientation() == QtCore.Qt.Orientation.Vertical
+    assert splitter.widget(0) is window.tabs
+    assert splitter.widget(1) is window.browser_widget
+    assert splitter.handleWidth() == SPLITTER_HANDLE_WIDTH
+    assert not splitter.childrenCollapsible()
+    window.show()
+    qtbot.waitExposed(window)
+    tabs_height, browser_height = splitter.sizes()
+    # Dragging the handle up by 100 pixels gives the browser that height from the tabs.
+    handle = splitter.handle(1)
+    start = handle.rect().center()
+    qtbot.mousePress(handle, QtCore.Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(handle, pos=start - QtCore.QPoint(0, 100))
+    qtbot.mouseRelease(handle, QtCore.Qt.MouseButton.LeftButton, pos=start - QtCore.QPoint(0, 100))
+    assert splitter.sizes() == [tabs_height - 100, browser_height + 100]
 
 
 def test_inputs_scroll_while_the_file_settings_stay_below_them(

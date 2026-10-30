@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pymeasure.display.manager import Experiment
 from pymeasure.display.Qt import QtCore, QtGui, QtWidgets
-from pymeasure.display.widgets import LogWidget, PlotWidget, TableWidget
+from pymeasure.display.widgets import LogWidget, TableWidget
 from pymeasure.display.windows import ManagedWindowBase
 
 from pilgrim.procedure import RippleProcedure
@@ -30,6 +30,8 @@ log.addHandler(logging.NullHandler())
 DISPLAYS = ("vin", "channel", "loads", "horizontal_divs", "bandwidths")
 #: The default results file name, with parameter placeholders; PyMeasure appends an index.
 DEFAULT_FILENAME = "{Procedure name}_{Vin}Vin"
+#: The width in pixels of the handle between the tabs and the experiment browser.
+SPLITTER_HANDLE_WIDTH = 8
 
 
 class RippleWindow(ManagedWindowBase):
@@ -39,8 +41,9 @@ class RippleWindow(ManagedWindowBase):
     buttons, and the message panel, where the procedure asks for the load to be set whenever
     it pauses; Resume continues it, and Pause holds the running procedure at its next step. The
     parameter inputs scroll when the window is too short for them, while the file settings and
-    the buttons stay in view below them. The tabs show the results as a table and a graph, the
-    captures as they arrive, and the log. Aborting a paused procedure ends it.
+    the buttons stay in view below them. The tabs show the results as a table, the captures as
+    they arrive, and the log, above the experiment browser; dragging the handle between them
+    splits the height of the window between the two. Aborting a paused procedure ends it.
 
     The log of each run is also saved next to its results file, under the same name with the
     ``.log`` extension (see :class:`RunLogHandler`), and the captures go to ``captures`` in the
@@ -54,16 +57,12 @@ class RippleWindow(ManagedWindowBase):
         columns = RippleProcedure.DATA_COLUMNS
         self.table_widget = TableWidget("Results Table", columns, by_column=False)
         self.captures_widget = CapturesWidget()
-        self.plot_widget = PlotWidget(
-            "Results Graph", columns, x_axis=BANDWIDTH_COLUMN, y_axis=VMAX_COLUMN
-        )
         self.log_widget = LogWidget("Experiment Log")
         super().__init__(
             RippleProcedure,
             widget_list=(
                 self.table_widget,
                 self.captures_widget,
-                self.plot_widget,
                 self.log_widget,
             ),
             inputs=INPUTS,
@@ -126,6 +125,19 @@ class RippleWindow(ManagedWindowBase):
         dock.setWidget(self.message_widget)
         dock.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        # ManagedWindowBase stacks the tabs and the browser in a splitter whose handle is thin
+        # and blends into the background; a wider, shaded one is easy to find and drag.
+        splitter = self.tabs.parentWidget()
+        if isinstance(splitter, QtWidgets.QSplitter):
+            self.splitter = splitter
+            splitter.setObjectName("results_splitter")
+            splitter.setHandleWidth(SPLITTER_HANDLE_WIDTH)
+            splitter.setChildrenCollapsible(False)
+            # The name keeps the style from the splitter inside the captures tab.
+            splitter.setStyleSheet(
+                "QSplitter#results_splitter::handle { background: palette(mid); }"
+                "QSplitter#results_splitter::handle:hover { background: palette(highlight); }"
+            )
 
     def queue(self, procedure: RippleProcedure | None = None) -> None:
         """Queue a run of the procedure, pausing through the message panel, for the inputs.
