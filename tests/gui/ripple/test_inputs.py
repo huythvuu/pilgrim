@@ -34,7 +34,7 @@ def test_uses_an_input_suited_to_each_parameter(widget: RippleInputsWidget) -> N
 
 def test_shows_the_defaults(widget: RippleInputsWidget) -> None:
     assert widget.scope_resource.value() == ""
-    assert widget.loads.text() == "[0, 50, 100]"
+    assert widget.loads.text() == "[0 A, 1 A, 2 A]"
     assert widget.horizontal_divs.text() == "[1 us, 1 ms]"
     assert widget.bandwidths.text() == "[20 MHz, 250 MHz, 1 GHz]"
     assert (widget.channel.minimum(), widget.channel.maximum()) == (1, 8)
@@ -61,7 +61,7 @@ def test_get_procedure_reads_the_inputs(widget: RippleInputsWidget) -> None:
     widget.scope_resource.setCurrentText("USB0::0x0699::0x0522::C031408::INSTR")
     widget.channel.setValue(5)
     widget.vin.setValue(54)
-    widget.loads.setText("[0, 100]")
+    widget.loads.setText("[0, 500 mA]")
     widget.horizontal_divs.setText("[2.5 us]")
     widget.bandwidths.setText("[20e6, 1e9] Hz")
     widget.target.setValue(12)
@@ -75,15 +75,15 @@ def test_get_procedure_reads_the_inputs(widget: RippleInputsWidget) -> None:
     assert (procedure.target, procedure.use_cursor) == (12, False)
     # Hidden cursor levels are still read, in case the box is checked again.
     assert (procedure.cursor_hi, procedure.cursor_lo) == (5, 4)
-    assert procedure.loads == [0, 100]
+    assert procedure.loads == [0, 0.5]
     # Pint lands a prefixed value such as 2.5 us within rounding of the plain number.
     assert procedure.horizontal_divs == pytest.approx([2.5e-6])
     assert procedure.bandwidths == [20e6, 1e9]
     assert [(load, bandwidth) for load, _, bandwidth in procedure.combinations()] == [
         (0, 20e6),
         (0, 1e9),
-        (100, 20e6),
-        (100, 1e9),
+        (0.5, 20e6),
+        (0.5, 1e9),
     ]
 
 

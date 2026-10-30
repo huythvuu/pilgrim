@@ -460,17 +460,17 @@ def test_execute_acquires_until_population_at_every_combination(
         ("clear",),
         ("acquisition", True),
         ("acquisition", False),
-        ("save_image", "C:/Temp/Ripple/12Vin ripple 0Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/12Vin ripple 0A 1us 20MHz.png"),
         ("horizontal_scale", 1e-6),
         ("bandwidth", 1, 1e9),
         ("clear",),
         ("acquisition", True),
         ("acquisition", False),
-        ("save_image", "C:/Temp/Ripple/12Vin ripple 0Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/12Vin ripple 0A 1us 1GHz.png"),
     ]
     assert next(populations, None) is None
     emit: Any = procedure.emit
-    row = {"Vin (V)": 12, "Load": 0, "Horizontal Div (s)": 1e-6}
+    row = {"Vin (V)": 12, "Load (A)": 0, "Horizontal Div (s)": 1e-6}
     # MEAS1 to MEAS4 give a mean of 0.5 V, a maximum of 2 V, a minimum of -3 V and a mean
     # peak-to-peak of 2 V, which lies 300 % of the mean away from it.
     values = {
@@ -481,7 +481,7 @@ def test_execute_acquires_until_population_at_every_combination(
         "Ripple (%)": 300.0,
     }
     captures = {
-        bandwidth: capture_hyperlink(Path("captures") / f"12Vin ripple 0Load 1us {text}.png")
+        bandwidth: capture_hyperlink(Path("captures") / f"12Vin ripple 0A 1us {text}.png")
         for bandwidth, text in [(20e6, "20MHz"), (1e9, "1GHz")]
     }
     assert [call.args for call in emit.call_args_list] == [
@@ -515,7 +515,7 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
     assert rows == [
         {
             "Vin (V)": 12,
-            "Load": 0,
+            "Load (A)": 0,
             "Horizontal Div (s)": 1e-6,
             "Bandwidth (Hz)": 20e6,
             "Mean Vmean (V)": 0.12346,
@@ -523,7 +523,7 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
             "Min Vmin (V)": -3.0,
             "Mean Vpk2pk (V)": 0.01235,
             "Ripple (%)": 90.00006,
-            "Capture": capture_hyperlink(Path("captures") / "12Vin ripple 0Load 1us 20MHz.png"),
+            "Capture": capture_hyperlink(Path("captures") / "12Vin ripple 0A 1us 20MHz.png"),
         }
     ]
 
@@ -655,17 +655,17 @@ def test_execute_pauses_before_every_load_change(monkeypatch: pytest.MonkeyPatch
     procedure.execute()
     pauses = [event for event in events if event[0] in {"pause", "save_image"}]
     assert pauses == [
-        ("pause", "Set the load to 0."),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 1GHz.png"),
-        ("pause", "Set the load to 50."),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 1GHz.png"),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 50Load 1us 1GHz.png"),
-        ("pause", "Set the load to 0."),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 20MHz.png"),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 1GHz.png"),
+        ("pause", "Set the load to 0A."),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0A 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0A 1us 1GHz.png"),
+        ("pause", "Set the load to 50A."),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50A 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50A 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50A 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 50A 1us 1GHz.png"),
+        ("pause", "Set the load to 0A."),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0A 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0A 1us 1GHz.png"),
     ]
 
 
@@ -723,7 +723,7 @@ def test_request_pause_stops_acquisition_until_resumed(monkeypatch: pytest.Monke
     request_pause_at_first_poll(procedure, scope)
     procedure.execute()
     assert [event for event in events if event[0] in {"pause", "acquisition"}] == [
-        ("pause", "Set the load to 0."),
+        ("pause", "Set the load to 0A."),
         ("acquisition", True),
         ("acquisition", False),
         ("pause", "Paused as requested."),
@@ -748,12 +748,12 @@ def test_request_pause_during_a_capture_pauses_before_the_next_combination(
     scope.save_image.side_effect = save_and_request
     procedure.execute()
     assert [event for event in events if event[0] in {"pause", "save_image", "bandwidth"}] == [
-        ("pause", "Set the load to 0."),
+        ("pause", "Set the load to 0A."),
         ("bandwidth", 1, 20e6),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 20MHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0A 1us 20MHz.png"),
         ("pause", "Paused as requested."),
         ("bandwidth", 1, 1e9),
-        ("save_image", "C:/Temp/Ripple/0Vin ripple 0Load 1us 1GHz.png"),
+        ("save_image", "C:/Temp/Ripple/0Vin ripple 0A 1us 1GHz.png"),
     ]
 
 
@@ -767,8 +767,8 @@ def test_a_load_change_satisfies_a_requested_pause(monkeypatch: pytest.MonkeyPat
     scope.save_image.side_effect = lambda path: procedure.request_pause()
     procedure.execute()
     assert [event for event in events if event[0] == "pause"] == [
-        ("pause", "Set the load to 0."),
-        ("pause", "Set the load to 50."),
+        ("pause", "Set the load to 0A."),
+        ("pause", "Set the load to 50A."),
     ]
 
 
@@ -887,7 +887,7 @@ def test_execute_moves_captures_to_local_directory(
 ) -> None:
     # The results directory does not exist yet; execute makes it with the captures directory.
     local_directory = tmp_path / results_directory / "captures"
-    names = ["12Vin ripple 0Load 1us 20MHz.png", "12Vin ripple 0Load 1us 1GHz.png"]
+    names = ["12Vin ripple 0A 1us 20MHz.png", "12Vin ripple 0A 1us 1GHz.png"]
     deleted: list[str] = []
 
     def delete_file(path: str) -> None:
@@ -936,7 +936,7 @@ def test_capture_directory_error_other_than_missing_is_raised(
 
 
 def test_capture_hyperlink_is_an_excel_formula_with_the_relative_path() -> None:
-    path = Path("captures") / "12Vin ripple 50Load 1ms 250MHz.png"
+    path = Path("captures") / "12Vin ripple 50A 1ms 250MHz.png"
     formula = capture_hyperlink(path)
     assert formula == f'=HYPERLINK("{path}")'
     # The results file splits its rows on commas and comments on hashes.
@@ -947,7 +947,7 @@ def test_capture_hyperlink_is_an_excel_formula_with_the_relative_path() -> None:
 def test_capture_file_name() -> None:
     procedure = RippleProcedure(vin=12, name="ripple")
     procedure.refresh_parameters()
-    assert procedure.capture_file_name(50, 1e-3, 250e6) == "12Vin ripple 50Load 1ms 250MHz.png"
+    assert procedure.capture_file_name(1.5, 1e-3, 250e6) == "12Vin ripple 1.5A 1ms 250MHz.png"
 
 
 @pytest.mark.parametrize(
@@ -962,7 +962,9 @@ def test_capture_file_name() -> None:
         (250e6, "Hz", "250MHz"),
         (1e9, "Hz", "1GHz"),
         (1.5e3, "Hz", "1.5kHz"),
-        (0.0, "s", "0ps"),
+        (0.0, "s", "0s"),
+        (1.5, "A", "1.5A"),
+        (0.5, "A", "500mA"),
     ],
 )
 def test_format_with_si_prefix(value: float, unit: str, text: str) -> None:
@@ -1104,7 +1106,7 @@ def test_execute_logs_capture_save_and_transfer(
     procedure = make_running_procedure(monkeypatch, scope, vin=12, pop_min=300, **ONE_COMBINATION)
     with caplog.at_level(logging.INFO, logger=LOGGER):
         procedure.execute()
-    name = "12Vin ripple 0Load 1us 20MHz.png"
+    name = "12Vin ripple 0A 1us 20MHz.png"
     scope_path = f"C:/Temp/Ripple/{name}"
     size = len(f"image of {scope_path}".encode())
     timed = [re.sub(r"\d+\.\d s", "N s", message) for message in caplog.messages]

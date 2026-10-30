@@ -73,7 +73,7 @@ class MessageWidget(QtWidgets.QWidget):
     def prompt(self, prompt: str) -> None:
         """Show a prompt; safe to call from any thread, as the procedure's pause handler.
 
-        :param prompt: What the user is to do, e.g. ``"Set the load to 50."``.
+        :param prompt: What the user is to do, e.g. ``"Set the load to 1.5A."``.
         """
         self._requested.emit(prompt)
 

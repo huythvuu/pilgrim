@@ -36,12 +36,12 @@ def test_prompt_from_another_thread_shows_it_and_enables_resume(qtbot: QtBot) ->
     qtbot.addWidget(widget)
     widget.set_running(True)
     with qtbot.waitSignal(widget.prompted, timeout=2000) as blocker:
-        thread = threading.Thread(target=widget.prompt, args=("Set the load to 50.",))
+        thread = threading.Thread(target=widget.prompt, args=("Set the load to 1.5A.",))
         thread.start()
         thread.join()
-    assert blocker.args == ["Set the load to 50."]
+    assert blocker.args == ["Set the load to 1.5A."]
     assert widget.is_prompting
-    assert widget.message.text() == "Set the load to 50."
+    assert widget.message.text() == "Set the load to 1.5A."
     assert widget.message.font().bold()
     assert widget.resume_button.isEnabled()
     assert not widget.pause_button.isEnabled()
@@ -50,7 +50,7 @@ def test_prompt_from_another_thread_shows_it_and_enables_resume(qtbot: QtBot) ->
 def test_resume_emits_and_shows_running(qtbot: QtBot) -> None:
     widget = MessageWidget()
     qtbot.addWidget(widget)
-    widget.show_prompt("Set the load to 50.")
+    widget.show_prompt("Set the load to 1.5A.")
     with qtbot.waitSignal(widget.resumed, timeout=2000):
         widget.resume_button.click()
     assert not widget.is_prompting
@@ -77,7 +77,7 @@ def test_pause_emits_and_waits_for_the_prompt(qtbot: QtBot) -> None:
 def test_clear_disables_both_buttons_without_emitting(qtbot: QtBot) -> None:
     widget = MessageWidget()
     qtbot.addWidget(widget)
-    widget.show_prompt("Set the load to 0.")
+    widget.show_prompt("Set the load to 0A.")
     with qtbot.assertNotEmitted(widget.resumed), qtbot.assertNotEmitted(widget.pause_requested):
         widget.clear()
     assert not widget.is_prompting

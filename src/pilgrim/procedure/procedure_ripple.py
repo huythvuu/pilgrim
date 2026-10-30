@@ -18,7 +18,6 @@ from .parameters import (
     BooleanParameter,
     FloatListParameter,
     FloatParameter,
-    IntegerListParameter,
     IntegerParameter,
     StringParameter,
 )
@@ -52,7 +51,7 @@ class ScopeEvent(IntEnum):
 
 
 VIN_COLUMN = "Vin (V)"
-LOAD_COLUMN = "Load"
+LOAD_COLUMN = "Load (A)"
 HORIZONTAL_DIV_COLUMN = "Horizontal Div (s)"
 BANDWIDTH_COLUMN = "Bandwidth (Hz)"
 VMEAN_COLUMN = "Mean Vmean (V)"
@@ -112,12 +111,15 @@ def format_with_si_prefix(value: float, unit: str) -> str:
     """Return a value with the SI prefix that puts its number from 1 to below 1000.
 
     So 1e-6 s gives ``"1us"``, 2.5e-6 s ``"2.5us"`` and 250e6 Hz ``"250MHz"``. The number
-    keeps up to six significant digits, and a value below 1 p takes the pico prefix.
+    keeps up to six significant digits, zero takes no prefix, and any other value below 1 p
+    takes the pico prefix.
 
     :param value: The value in ``unit``.
     :param unit: The unit symbol, e.g. ``"s"`` or ``"Hz"``.
     :returns: The number with its prefix and unit, without a space.
     """
+    if value == 0:
+        return f"0{unit}"
     scale, prefix = next(
         ((scale, prefix) for scale, prefix in _SI_PREFIXES if abs(value) >= scale),
         _SI_PREFIXES[-1],
@@ -154,11 +156,11 @@ class RippleProcedure(Procedure):
 
     No instrument here controls the load, so before the first combination and whenever the load
     changes, the procedure pauses for the user to set it: it hands a prompt such as
-    ``"Set the load to 50."`` to :attr:`pause_handler` and waits until :meth:`resume` is called,
-    or until it is asked to stop. By default the prompt is printed and Enter resumes, as on a
-    command line; a GUI replaces the handler with one that shows the prompt and resumes from a
-    button. The user can also ask for a pause at any time through :meth:`request_pause`, which
-    the procedure honours at its next step with the prompt ``PAUSE_PROMPT``.
+    ``"Set the load to 1.5A."`` to :attr:`pause_handler` and waits until :meth:`resume` is
+    called, or until it is asked to stop. By default the prompt is printed and Enter resumes, as
+    on a command line; a GUI replaces the handler with one that shows the prompt and resumes
+    from a button. The user can also ask for a pause at any time through :meth:`request_pause`,
+    which the procedure honours at its next step with the prompt ``PAUSE_PROMPT``.
     """
 
     name = StringParameter(
@@ -179,12 +181,12 @@ class RippleProcedure(Procedure):
         description="Scope channel of the output voltage",
     )
     vin = IntegerParameter("Vin", default=0, description="Nominal input voltage")
-    loads = IntegerListParameter(
+    loads = FloatListParameter(
         "Loads",
-        default=[0, 50, 100],
+        units="A",
+        default=[0, 1, 2],
         minimum=0,
-        maximum=100,
-        description="Load values to check",
+        description="Load currents to check",
     )
     horizontal_divs = FloatListParameter(
         "Horizontal divs",
@@ -334,11 +336,12 @@ class RippleProcedure(Procedure):
         channel = self.scope.channels[self.channel]
         combinations = self.combinations()
         log.info(f"Starting ripple measurement over {len(combinations)} combinations.")
-        previous_load: int | None = None
+        previous_load: float | None = None
         for done, (load, horizontal_div, bandwidth) in enumerate(combinations, start=1):
+            load_text = format_with_si_prefix(load, "A")
             if load != previous_load:
                 # No instrument here controls the load, so the user sets it.
-                if not self.pause(f"Set the load to {load}."):
+                if not self.pause(f"Set the load to {load_text}."):
                     log.info("Ripple measurement stopped.")
                     return
                 previous_load = load
@@ -351,7 +354,7 @@ class RippleProcedure(Procedure):
             actual_scale, actual_bandwidth = self.scope.horizontal_scale, channel.bandwidth
             # The scope can take seconds over these settings, so the time spent is logged.
             log.info(
-                f"Acquiring at load {load}, {actual_scale} s/div, {actual_bandwidth} Hz; set "
+                f"Acquiring at {load_text}, {actual_scale} s/div, {actual_bandwidth} Hz; set "
                 f"and read back in {perf_counter() - started:.1f} s."
             )
             # Starting acquisition carries the statistics on, so they are cleared first.
@@ -404,7 +407,7 @@ class RippleProcedure(Procedure):
         button.
 
         :param prompt: What the user is to do before the procedure continues, e.g.
-            ``"Set the load to 50."``.
+            ``"Set the load to 1.5A."``.
         :returns: Whether the procedure was resumed; False when it was asked to stop first.
         """
         self._resumed.clear()
@@ -450,15 +453,15 @@ class RippleProcedure(Procedure):
         input(f"{prompt} Press Enter to continue. ")
         self.resume()
 
-    def combinations(self) -> list[tuple[int, float, float]]:
+    def combinations(self) -> list[tuple[float, float, float]]:
         """Return every combination of load, horizontal scale and bandwidth to capture at.
 
-        The load changes slowest and the bandwidth fastest, so loads of ``[0, 50]``, horizontal
+        The load changes slowest and the bandwidth fastest, so loads of ``[0, 1.5]``, horizontal
         scales of ``[1e-6]`` and bandwidths of ``[20e6, 1e9]`` give ``[(0, 1e-6, 20e6),
-        (0, 1e-6, 1e9), (50, 1e-6, 20e6), (50, 1e-6, 1e9)]``.
+        (0, 1e-6, 1e9), (1.5, 1e-6, 20e6), (1.5, 1e-6, 1e9)]``.
 
-        :returns: The ``(load, horizontal scale in s/div, bandwidth in Hz)`` combinations, or
-            an empty list when any of the three lists is empty.
+        :returns: The ``(load in A, horizontal scale in s/div, bandwidth in Hz)`` combinations,
+            or an empty list when any of the three lists is empty.
         """
         return [
             (load, horizontal_div, bandwidth)
@@ -529,18 +532,19 @@ class RippleProcedure(Procedure):
         self.scope.cursor.enabled = False
         log.info("Cursors hidden.")
 
-    def capture_file_name(self, load: int, horizontal_div: float, bandwidth: float) -> str:
+    def capture_file_name(self, load: float, horizontal_div: float, bandwidth: float) -> str:
         """Return the file name of the capture taken at one combination.
 
-        :param load: The load.
+        :param load: The load current in amperes.
         :param horizontal_div: The horizontal scale in seconds per division.
         :param bandwidth: The bandwidth limit in Hz.
-        :returns: The file name, e.g. ``"12Vin ripple 50Load 1us 20MHz.png"``, with both values
-            formatted by :func:`format_with_si_prefix`.
+        :returns: The file name, e.g. ``"12Vin ripple 1.5A 1us 20MHz.png"``, with all three
+            values formatted by :func:`format_with_si_prefix`.
         """
+        current = format_with_si_prefix(load, "A")
         time = format_with_si_prefix(horizontal_div, "s")
         frequency = format_with_si_prefix(bandwidth, "Hz")
-        return f"{self.vin}Vin {self.name} {load}Load {time} {frequency}.png"
+        return f"{self.vin}Vin {self.name} {current} {time} {frequency}.png"
 
     def _make_scope_capture_dir(self) -> str:
         """Create ``scope_capture_dir`` on the scope where it does not exist, level by level.

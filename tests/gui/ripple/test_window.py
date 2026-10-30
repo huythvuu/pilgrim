@@ -78,9 +78,9 @@ def queue_without_running(window: RippleWindow, monkeypatch: pytest.MonkeyPatch)
     return queued
 
 
-def wait_for_prompt(qtbot: QtBot, window: RippleWindow, load: int | str) -> None:
-    """Wait until the procedure asks for ``load`` to be set, or shows ``load`` as its prompt."""
-    prompt = load if isinstance(load, str) else f"Set the load to {load}."
+def wait_for_prompt(qtbot: QtBot, window: RippleWindow, load: float | str) -> None:
+    """Wait until the procedure asks for ``load`` A to be set, or shows ``load`` as its prompt."""
+    prompt = load if isinstance(load, str) else f"Set the load to {load:g}A."
     qtbot.waitUntil(
         lambda: (
             window.message_widget.is_prompting and window.message_widget.message.text() == prompt
@@ -205,15 +205,15 @@ def test_run_pauses_for_every_load_and_resumes_on_the_button(
     assert window.message_widget.message.text() == RUNNING_TEXT
     wait_for_prompt(qtbot, window, 50)
     assert sorted(path.name for path in (tmp_path / "captures").iterdir()) == [
-        "0Vin ripple 0Load 1us 20MHz.png"
+        "0Vin ripple 0A 1us 20MHz.png"
     ]
     window.message_widget.resume_button.click()
     experiment = wait_for_end(qtbot, window)
     assert experiment.procedure.status == Procedure.FINISHED
     assert not window.message_widget.is_prompting
     assert not window.message_widget.pause_button.isEnabled()
-    assert list(experiment.results.data["Load"]) == [0, 50]
-    captures = ["0Vin ripple 0Load 1us 20MHz.png", "0Vin ripple 50Load 1us 20MHz.png"]
+    assert list(experiment.results.data["Load (A)"]) == [0, 50]
+    captures = ["0Vin ripple 0A 1us 20MHz.png", "0Vin ripple 50A 1us 20MHz.png"]
     assert sorted(path.name for path in (tmp_path / "captures").iterdir()) == captures
     # The results file links each row to its capture, read back from the file as written.
     assert list(experiment.results.data["Capture"]) == [
@@ -248,7 +248,7 @@ def test_pause_button_holds_the_run_until_resume(
     window.message_widget.resume_button.click()
     experiment = wait_for_end(qtbot, window)
     assert experiment.procedure.status == Procedure.FINISHED
-    assert list(experiment.results.data["Load"]) == [0, 50]
+    assert list(experiment.results.data["Load (A)"]) == [0, 50]
 
 
 def test_abort_while_paused_ends_the_run(qtbot: QtBot, window: RippleWindow) -> None:
@@ -280,7 +280,7 @@ def test_each_run_saves_its_log_next_to_its_results(
     for path in logs:
         text = path.read_text(encoding="utf-8")
         assert "Connecting to the scope." in text
-        assert "Paused: Set the load to 0." in text
+        assert "Paused: Set the load to 0A." in text
         path.unlink()  # The file is closed once the run has ended.
 
 
