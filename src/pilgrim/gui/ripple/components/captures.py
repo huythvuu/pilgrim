@@ -6,6 +6,8 @@ from pathlib import Path
 from pymeasure.display.Qt import QtCore, QtGui, QtWidgets
 from pymeasure.display.widgets import TabWidget
 
+from .path_banner import PathBanner
+
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
@@ -77,8 +79,8 @@ class CapturesWidget(TabWidget, QtWidgets.QWidget):
 
     The directory is looked at every ``refresh_time`` seconds once :meth:`watch` names it,
     which the window does when a procedure starts. A capture that appears or is replaced is
-    selected, so the latest one is shown, scaled to fit. A button opens the directory in the
-    file manager.
+    selected, so the latest one is shown, scaled to fit. A banner names the directory and opens
+    it in the file manager on a button.
 
     :param refresh_time: The seconds between two looks at the directory.
     :param parent: The parent widget.
@@ -96,19 +98,12 @@ class CapturesWidget(TabWidget, QtWidgets.QWidget):
         self._timer.timeout.connect(self.refresh)
 
     def _setup_ui(self) -> None:
-        self.directory_label = QtWidgets.QLabel(IDLE_TEXT, self)
-        self.directory_label.setWordWrap(True)
-        self.open_button = QtWidgets.QPushButton("Open folder", self)
-        self.open_button.setEnabled(False)
-        self.open_button.clicked.connect(self.open_directory)
+        self.banner = PathBanner(IDLE_TEXT, "Open folder", self)
         self.file_list = QtWidgets.QListWidget(self)
         self.file_list.currentItemChanged.connect(self._show_selected)
         self.image = CaptureView(self)
 
     def _layout(self) -> None:
-        header = QtWidgets.QHBoxLayout()
-        header.addWidget(self.directory_label, 1)
-        header.addWidget(self.open_button)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
         splitter.addWidget(self.file_list)
         splitter.addWidget(self.image)
@@ -116,7 +111,7 @@ class CapturesWidget(TabWidget, QtWidgets.QWidget):
         # factors would leave it a sliver next to the list's size hint.
         splitter.setSizes([250, 750])
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addLayout(header)
+        layout.addWidget(self.banner)
         layout.addWidget(splitter, 1)
 
     @property
@@ -133,13 +128,10 @@ class CapturesWidget(TabWidget, QtWidgets.QWidget):
         self._listed.clear()
         self.file_list.clear()
         self.image.show_capture(None)
+        self.banner.set_path(directory)
         if directory is None:
-            self.directory_label.setText(IDLE_TEXT)
-            self.open_button.setEnabled(False)
             self._timer.stop()
             return
-        self.directory_label.setText(str(directory))
-        self.open_button.setEnabled(True)
         self.refresh()
         self._timer.start()
 
@@ -169,13 +161,6 @@ class CapturesWidget(TabWidget, QtWidgets.QWidget):
             self._show_selected(current)
         else:
             self.file_list.setCurrentRow(self._row_of(newest))
-
-    def open_directory(self) -> None:
-        """Open the watched directory in the file manager, if it exists."""
-        if self._directory is None or not self._directory.is_dir():
-            log.warning(f"The capture directory {self._directory} does not exist yet.")
-            return
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self._directory)))
 
     def _row_of(self, name: str) -> int:
         for row in range(self.file_list.count()):

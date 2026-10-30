@@ -104,6 +104,9 @@ def test_is_built_for_the_ripple_procedure(window: RippleWindow) -> None:
     assert not window.message_widget.is_prompting
     tabs = [window.tabs.tabText(index) for index in range(window.tabs.count())]
     assert tabs == ["Results Table", "Captures", "Experiment Log"]
+    assert window.table_widget.banner.path is None
+    assert window.captures_widget.banner.path is None
+    assert window.log_widget.banner.path is None
     assert window.filename == DEFAULT_FILENAME
     assert window.windowTitle() == "Ripple capture"
 
@@ -200,6 +203,11 @@ def test_run_pauses_for_every_load_and_resumes_on_the_button(
     window.queue()
     wait_for_prompt(qtbot, window, 0)
     assert not window.message_widget.pause_button.isEnabled()
+    # The tabs name the files of the run as soon as it starts.
+    assert window.table_widget.banner.path == tmp_path / "ripple_0Vin_1.csv"
+    assert window.captures_widget.banner.path == tmp_path / "captures"
+    assert window.log_widget.banner.path == tmp_path / "ripple_0Vin_1.log"
+    assert window.run_log.path == tmp_path / "ripple_0Vin_1.log"
     window.message_widget.resume_button.click()
     assert window.statusBar().currentMessage() == ""
     assert window.message_widget.message.text() == RUNNING_TEXT
@@ -276,6 +284,7 @@ def test_each_run_saves_its_log_next_to_its_results(
         experiment = wait_for_end(qtbot, window)
         logs.append(Path(experiment.data_filename).with_suffix(".log"))
         assert window.run_log.path == logs[-1]
+        assert window.log_widget.banner.path == logs[-1]
     assert [path.name for path in logs] == ["ripple_0Vin_1.log", "ripple_0Vin_2.log"]
     for path in logs:
         text = path.read_text(encoding="utf-8")

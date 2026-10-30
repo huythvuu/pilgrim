@@ -43,8 +43,9 @@ def make_widget(qtbot: QtBot) -> CapturesWidget:
 def test_idle_until_watching(qtbot: QtBot) -> None:
     widget = make_widget(qtbot)
     assert widget.directory is None
-    assert widget.directory_label.text() == IDLE_TEXT
-    assert not widget.open_button.isEnabled()
+    assert widget.banner.path is None
+    assert widget.banner.label.text() == IDLE_TEXT
+    assert not widget.banner.open_button.isEnabled()
     assert listed_names(widget) == []
     widget.refresh()  # Nothing to do without a directory.
 
@@ -56,8 +57,8 @@ def test_lists_the_captures_newest_first_and_shows_the_newest(qtbot: QtBot, tmp_
     widget = make_widget(qtbot)
     widget.watch(tmp_path)
     assert widget.directory == tmp_path
-    assert widget.directory_label.text() == str(tmp_path)
-    assert widget.open_button.isEnabled()
+    assert widget.banner.path == tmp_path
+    assert widget.banner.open_button.isEnabled()
     assert listed_names(widget) == ["newer.png", "older.png"]
     assert widget.file_list.currentItem().text() == "newer.png"
     assert shown_color(widget) == BLUE
@@ -112,7 +113,7 @@ def test_missing_directory_is_watched_until_it_appears(qtbot: QtBot, tmp_path: P
     directory = tmp_path / "captures"
     widget = make_widget(qtbot)
     widget.watch(directory)
-    assert widget.directory_label.text() == str(directory)
+    assert widget.banner.path == directory
     assert listed_names(widget) == []
     directory.mkdir()
     write_capture(directory / "capture.png", RED, 1000)
@@ -127,6 +128,6 @@ def test_watching_none_clears(qtbot: QtBot, tmp_path: Path) -> None:
     widget.watch(None)
     assert widget.directory is None
     assert listed_names(widget) == []
-    assert widget.directory_label.text() == IDLE_TEXT
-    assert not widget.open_button.isEnabled()
+    assert widget.banner.path is None
+    assert not widget.banner.open_button.isEnabled()
     assert widget.image.pixmap().isNull()

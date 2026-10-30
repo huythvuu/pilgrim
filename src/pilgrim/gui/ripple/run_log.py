@@ -29,9 +29,9 @@ def unique_log_path(results_path: Path) -> Path:
 class RunLogHandler(logging.Handler):
     """Write log records to the log file of the run in progress, next to its results file.
 
-    Each run gets its own file, named by :func:`unique_log_path` and created at the first record
-    of the run. Records emitted between runs are not written. Call :meth:`end_run` once a run
-    has ended to close its file.
+    Each run gets its own file, named by :func:`unique_log_path` and created by
+    :meth:`start_run` or at the first record of the run, whichever comes first. Records emitted
+    between runs are not written. Call :meth:`end_run` once a run has ended to close its file.
 
     :param results_path: Return the path of the results file of the run in progress, or None
         when no run is in progress.
@@ -54,16 +54,27 @@ class RunLogHandler(logging.Handler):
         if results_path is None:
             return
         try:
-            if self._stream is None or results_path != self._run_results_path:
-                self._close_stream()
-                self.path = unique_log_path(results_path)
-                # Exclusive creation, so an existing log file is never overwritten.
-                self._stream = self.path.open("x", encoding="utf-8")
-                self._run_results_path = results_path
-            self._stream.write(f"{self.format(record)}\n")
-            self._stream.flush()
+            self._open_run(results_path)
+            stream = self._stream
+            if stream is not None:
+                stream.write(f"{self.format(record)}\n")
+                stream.flush()
         except Exception:
             self.handleError(record)
+
+    def start_run(self, results_path: Path) -> Path:
+        """Create the log file of a run that starts and return its path.
+
+        The file is the one the records of the run go to; a record that came first has already
+        created it.
+
+        :param results_path: The path of the results file of the run.
+        """
+        self.acquire()
+        try:
+            return self._open_run(results_path)
+        finally:
+            self.release()
 
     def end_run(self) -> None:
         """Close the log file of the run that has ended."""
@@ -77,6 +88,18 @@ class RunLogHandler(logging.Handler):
         """Close the log file and the handler."""
         self.end_run()
         super().close()
+
+    def _open_run(self, results_path: Path) -> Path:
+        """Open the log file of the run, unless it is open already, and return its path."""
+        path = self.path
+        if self._stream is None or path is None or results_path != self._run_results_path:
+            self._close_stream()
+            path = unique_log_path(results_path)
+            # Exclusive creation, so an existing log file is never overwritten.
+            self._stream = path.open("x", encoding="utf-8")
+            self.path = path
+            self._run_results_path = results_path
+        return path
 
     def _close_stream(self) -> None:
         if self._stream is not None:

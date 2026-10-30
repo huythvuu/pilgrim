@@ -89,6 +89,40 @@ def test_an_existing_log_file_is_not_overwritten(
     assert "New run." in (tmp_path / "ripple_0Vin_1_2.log").read_text(encoding="utf-8")
 
 
+def test_start_run_creates_the_file_before_the_first_record(
+    logger: tuple[logging.Logger, RunLogHandler], runs: Runs, tmp_path: Path
+) -> None:
+    log, handler = logger
+    runs.results_path = tmp_path / "ripple_0Vin_1.csv"
+    path = handler.start_run(runs.results_path)
+    assert path == tmp_path / "ripple_0Vin_1.log"
+    assert handler.path == path
+    assert path.read_text(encoding="utf-8") == ""
+    log.info("Run.")
+    handler.end_run()
+    assert path.read_text(encoding="utf-8").endswith("INFO tests.run_log: Run.\n")
+    assert list(tmp_path.glob("*.log")) == [path]
+
+
+def test_start_run_after_the_first_record_names_the_same_file(
+    logger: tuple[logging.Logger, RunLogHandler], runs: Runs, tmp_path: Path
+) -> None:
+    log, handler = logger
+    (tmp_path / "ripple_0Vin_1.log").write_text("Old run.\n", encoding="utf-8")
+    runs.results_path = tmp_path / "ripple_0Vin_1.csv"
+    log.info("Started.")
+    assert handler.start_run(runs.results_path) == tmp_path / "ripple_0Vin_1_2.log"
+    log.info("Run.")
+    handler.end_run()
+    text = (tmp_path / "ripple_0Vin_1_2.log").read_text(encoding="utf-8")
+    assert "Started." in text
+    assert "Run." in text
+    assert sorted(path.name for path in tmp_path.glob("*.log")) == [
+        "ripple_0Vin_1.log",
+        "ripple_0Vin_1_2.log",
+    ]
+
+
 def test_end_run_closes_the_file(
     logger: tuple[logging.Logger, RunLogHandler], runs: Runs, tmp_path: Path
 ) -> None:

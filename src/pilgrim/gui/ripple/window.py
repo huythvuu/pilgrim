@@ -5,7 +5,6 @@ from pathlib import Path
 
 from pymeasure.display.manager import Experiment
 from pymeasure.display.Qt import QtCore, QtGui, QtWidgets
-from pymeasure.display.widgets import LogWidget, TableWidget
 from pymeasure.display.windows import ManagedWindowBase
 
 from pilgrim.procedure import RippleProcedure
@@ -19,7 +18,14 @@ from pilgrim.procedure.procedure_ripple import (
     VMIN_COLUMN,
 )
 
-from .components import INPUTS, CapturesWidget, MessageWidget, RippleInputsWidget
+from .components import (
+    INPUTS,
+    CapturesWidget,
+    ExperimentLogWidget,
+    MessageWidget,
+    ResultsTableWidget,
+    RippleInputsWidget,
+)
 from .run_log import RunLogHandler
 
 log = logging.getLogger(__name__)
@@ -42,7 +48,9 @@ class RippleWindow(ManagedWindowBase):
     parameter inputs scroll when the window is too short for them, while the file settings and
     the buttons stay in view below them. The tabs show the results as a table, the captures as
     they arrive, and the log, above the experiment browser; dragging the handle between them
-    splits the height of the window between the two. Aborting a paused procedure ends it.
+    splits the height of the window between the two. Each tab names the results file, the
+    capture directory or the log file of the running procedure and opens it on a button.
+    Aborting a paused procedure ends it.
 
     The log of each run is also saved next to its results file, under the same name with the
     ``.log`` extension (see :class:`RunLogHandler`), and the captures go to ``captures`` in the
@@ -54,9 +62,9 @@ class RippleWindow(ManagedWindowBase):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         columns = RippleProcedure.DATA_COLUMNS
-        self.table_widget = TableWidget("Results Table", columns, by_column=False)
+        self.table_widget = ResultsTableWidget("Results Table", columns, by_column=False)
         self.captures_widget = CapturesWidget()
-        self.log_widget = LogWidget("Experiment Log")
+        self.log_widget = ExperimentLogWidget("Experiment Log")
         super().__init__(
             RippleProcedure,
             widget_list=(
@@ -189,12 +197,15 @@ class RippleWindow(ManagedWindowBase):
         super().abort()
 
     def running(self, experiment: Experiment) -> None:
-        """Show the captures of the procedure that started and enable Pause.
+        """Name the files of the procedure that started in the tabs and enable Pause.
 
         :param experiment: The experiment whose procedure is running.
         """
         super().running(experiment)
+        results_path = Path(experiment.data_filename)
+        self.table_widget.set_results_path(results_path)
         self.captures_widget.watch(experiment.procedure.capture_directory)
+        self.log_widget.set_log_path(self.run_log.start_run(results_path))
         self.message_widget.set_running(True)
 
     def finished(self, experiment: Experiment) -> None:
