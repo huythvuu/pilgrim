@@ -12,9 +12,8 @@ from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.procedure_ripple import (
     BANDWIDTH_COLUMN,
     DEFAULT_RESULTS_DIRECTORY,
-    OVERSHOOT_COLUMN,
     PK2PK_COLUMN,
-    UNDERSHOOT_COLUMN,
+    RIPPLE_COLUMN,
     VMAX_COLUMN,
     VMEAN_COLUMN,
     VMIN_COLUMN,
@@ -82,8 +81,7 @@ class RippleWindow(ManagedWindowBase):
                 VMAX_COLUMN,
                 VMIN_COLUMN,
                 PK2PK_COLUMN,
-                OVERSHOOT_COLUMN,
-                UNDERSHOOT_COLUMN,
+                RIPPLE_COLUMN,
             ]
         )
         # The DEBUG records of a run would flood the log tab; the run log file keeps them.

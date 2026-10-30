@@ -456,14 +456,13 @@ def test_execute_acquires_until_population_at_every_combination(
     emit: Any = procedure.emit
     row = {"Vin (V)": 12, "Load": 0, "Horizontal Div (s)": 1e-6}
     # MEAS1 to MEAS4 give a mean of 0.5 V, a maximum of 2 V, a minimum of -3 V and a mean
-    # peak-to-peak of 2 V, so the maximum lies 300 % and the minimum 700 % of the mean away.
+    # peak-to-peak of 2 V, which lies 300 % of the mean away from it.
     values = {
         "Mean Vmean (V)": 0.5,
         "Max Vmax (V)": 2.0,
         "Min Vmin (V)": -3.0,
         "Mean Vpk2pk (V)": 2.0,
-        "Overshoot (%)": 300.0,
-        "Undershoot (%)": 700.0,
+        "Ripple (%)": 300.0,
     }
     captures = {
         bandwidth: capture_hyperlink(Path("captures") / f"12Vin ripple 0Load 1us {text}.png")
@@ -482,7 +481,7 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
     add_child = scope.add_child.side_effect
     # The measurements are attached at startup, so the readings are set as they are added.
     readings = {1: ("mean", 0.123456789), 2: ("maximum", 1.0000049)}
-    readings |= {3: ("minimum", -2.9999951), 4: ("mean", 1.5e-7)}
+    readings |= {3: ("minimum", -2.9999951), 4: ("mean", 0.0123456)}
 
     def add_child_with_readings(cls: type, number: int, **kwargs: object) -> MagicMock:
         measurement = add_child(cls, number, **kwargs)
@@ -495,8 +494,8 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
     procedure.execute()
     emit: Any = procedure.emit
     rows = [call.args[1] for call in emit.call_args_list if call.args[0] == "results"]
-    # The percentages are derived from the values as read (710.00398... % and
-    # 2529.99605... %), then rounded like them.
+    # The ripple is derived from the values as read (90.00006390... %), then rounded like
+    # them; the rounded values would give 89.9968 %.
     assert rows == [
         {
             "Vin (V)": 12,
@@ -506,9 +505,8 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
             "Mean Vmean (V)": 0.12346,
             "Max Vmax (V)": 1.0,
             "Min Vmin (V)": -3.0,
-            "Mean Vpk2pk (V)": 0.0,
-            "Overshoot (%)": 710.00398,
-            "Undershoot (%)": 2529.99605,
+            "Mean Vpk2pk (V)": 0.01235,
+            "Ripple (%)": 90.00006,
             "Capture": capture_hyperlink(Path("captures") / "12Vin ripple 0Load 1us 20MHz.png"),
         }
     ]
@@ -956,23 +954,21 @@ def test_format_with_si_prefix(value: float, unit: str, text: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "mean", "percent"),
+    ("pk2pk", "mean", "percent"),
     [
-        (5.25, 5.0, 5.0),
-        (4.8, 5.0, 4.0),
+        (0.25, 5.0, 95.0),
         (2.0, 0.5, 300.0),
-        (-3.0, 0.5, 700.0),
         (5.0, 5.0, 0.0),
         # The mean keeps its sign.
-        (-11.0, -12.0, -100 / 12),
+        (0.6, -12.0, -105.0),
     ],
 )
-def test_deviation_percent(value: float, mean: float, percent: float) -> None:
-    assert procedure_ripple.deviation_percent(value, mean) == pytest.approx(percent)
+def test_ripple_percent(pk2pk: float, mean: float, percent: float) -> None:
+    assert procedure_ripple.ripple_percent(pk2pk, mean) == pytest.approx(percent)
 
 
-def test_deviation_percent_of_a_zero_mean_is_nan() -> None:
-    assert math.isnan(procedure_ripple.deviation_percent(1.0, 0.0))
+def test_ripple_percent_of_a_zero_mean_is_nan() -> None:
+    assert math.isnan(procedure_ripple.ripple_percent(1.0, 0.0))
 
 
 def test_shutdown_before_startup_does_not_raise() -> None:
@@ -1011,7 +1007,7 @@ def test_execute_logs_every_population_per_poll(
         "MINIMUM minimum -3.0 V from 330 values, PK2PK mean 2.0 V from 340 values, "
         "over 1234 acquisitions."
     ) in caplog.messages
-    assert "Overshoot 300.0 %, undershoot 700.0 %." in caplog.messages
+    assert "Ripple 300.0 %." in caplog.messages
 
 
 def test_execute_warns_when_short_populations_stall(

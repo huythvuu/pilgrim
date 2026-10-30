@@ -59,8 +59,7 @@ VMEAN_COLUMN = "Mean Vmean (V)"
 VMAX_COLUMN = "Max Vmax (V)"
 VMIN_COLUMN = "Min Vmin (V)"
 PK2PK_COLUMN = "Mean Vpk2pk (V)"
-OVERSHOOT_COLUMN = "Overshoot (%)"
-UNDERSHOOT_COLUMN = "Undershoot (%)"
+RIPPLE_COLUMN = "Ripple (%)"
 CAPTURE_COLUMN = "Capture"
 # The measurement types of the output voltage channel the scope must have; startup adds the
 # missing ones.
@@ -81,8 +80,8 @@ class Result(NamedTuple):
     statistic: str
 
 
-#: The results read from the scope at every combination, in column order; the overshoot and
-#: undershoot columns follow, computed from them.
+#: The results read from the scope at every combination, in column order; the ripple column
+#: follows, computed from them.
 RESULTS = [
     Result(VMEAN_COLUMN, "MEAN", "mean"),
     Result(VMAX_COLUMN, "MAXIMUM", "maximum"),
@@ -240,8 +239,7 @@ class RippleProcedure(Procedure):
         HORIZONTAL_DIV_COLUMN,
         BANDWIDTH_COLUMN,
         *(result.column for result in RESULTS),
-        OVERSHOOT_COLUMN,
-        UNDERSHOOT_COLUMN,
+        RIPPLE_COLUMN,
         CAPTURE_COLUMN,
     ]
 
@@ -308,10 +306,9 @@ class RippleProcedure(Procedure):
         not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
         the mean of the first MEAN measurement of ``channel`` that the scope lists, the maximum
         of its first MAXIMUM measurement, the minimum of its first MINIMUM measurement and the
-        mean of its first PK2PK measurement, each over all acquisitions, the overshoot and
-        undershoot computed from them, see :func:`deviation_percent`, and a link to the
-        capture that opens it from Excel, see :func:`capture_hyperlink`. Stops early when
-        asked to.
+        mean of its first PK2PK measurement, each over all acquisitions, the ripple computed
+        from them, see :func:`ripple_percent`, and a link to the capture that opens it from
+        Excel, see :func:`capture_hyperlink`. Stops early when asked to.
 
         :raises ValueError: If the scope has no measurements or no MEAN, MAXIMUM, MINIMUM or
             PK2PK measurement of ``channel``, which :meth:`startup` adds, or a capture could
@@ -623,10 +620,9 @@ class RippleProcedure(Procedure):
     ) -> dict[str, float]:
         """Read the statistics of :attr:`RESULTS` from the scope, derive the rest, and log them.
 
-        The overshoot is the deviation of Max Vmax from Mean Vmean and the undershoot that of
-        Min Vmin, each as a percentage of Mean Vmean, see :func:`deviation_percent`. The
-        percentages are derived from the values as read, and every value is then rounded to
-        :data:`RESULT_DECIMALS` decimal places.
+        The ripple is the deviation of Mean Vpk2pk from Mean Vmean as a percentage of Mean
+        Vmean, see :func:`ripple_percent`. It is derived from the values as read, and every
+        value is then rounded to :data:`RESULT_DECIMALS` decimal places.
 
         :param recorded: The measurements of ``channel`` by type.
         :param populations: The populations by measurement number the statistics come from.
@@ -642,12 +638,9 @@ class RippleProcedure(Procedure):
             population = populations[_measurement_number(measurement)]
             read.append(f"{name} {value} V from {population} values")
         log.info(f"{', '.join(read)}, over {self.scope.acquisition_count} acquisitions.")
-        mean = results[VMEAN_COLUMN]
-        overshoot = deviation_percent(results[VMAX_COLUMN], mean)
-        undershoot = deviation_percent(results[VMIN_COLUMN], mean)
-        log.info(f"Overshoot {overshoot} %, undershoot {undershoot} %.")
-        results[OVERSHOOT_COLUMN] = overshoot
-        results[UNDERSHOOT_COLUMN] = undershoot
+        ripple = ripple_percent(results[PK2PK_COLUMN], results[VMEAN_COLUMN])
+        log.info(f"Ripple {ripple} %.")
+        results[RIPPLE_COLUMN] = ripple
         return {column: round(value, RESULT_DECIMALS) for column, value in results.items()}
 
     def _attach_measurements(self) -> list[TektronixMSO456Measurement]:
@@ -743,20 +736,19 @@ def cursor_levels(target: float, below: float, above: float) -> tuple[float, flo
     return target - magnitude * below / 100, target + magnitude * above / 100
 
 
-def deviation_percent(value: float, mean: float) -> float:
-    """Return how far a value lies from a mean, as a percentage of the mean.
+def ripple_percent(pk2pk: float, mean: float) -> float:
+    """Return the ripple of a rail, how far its peak-to-peak voltage lies from its mean.
 
-    The overshoot of a rail is the deviation of its maximum and the undershoot that of its
-    minimum: a maximum of 5.25 V and a minimum of 4.8 V about a mean of 5 V give 5 % and 4 %.
-    The mean keeps its sign, so a negative rail gives negative percentages.
+    The deviation is a percentage of the mean: a peak-to-peak voltage of 0.25 V on a mean of
+    5 V gives 95 %. The mean keeps its sign, so a negative rail gives a negative percentage.
 
-    :param value: The value, e.g. the maximum.
-    :param mean: The mean the value is compared to.
-    :returns: ``abs(value - mean) / mean * 100``, NaN when the mean is zero.
+    :param pk2pk: The peak-to-peak voltage.
+    :param mean: The mean voltage the peak-to-peak voltage is compared to.
+    :returns: ``abs(mean - pk2pk) / mean * 100``, NaN when the mean is zero.
     """
     if mean == 0:
         return math.nan
-    return abs(value - mean) / mean * 100
+    return abs(mean - pk2pk) / mean * 100
 
 
 def _has_event(exc: ValueError, event: ScopeEvent) -> bool:
