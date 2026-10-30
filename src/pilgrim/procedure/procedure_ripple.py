@@ -146,10 +146,11 @@ class RippleProcedure(Procedure):
 
     Startup makes sure the scope measures the maximum, minimum, mean and peak-to-peak of
     ``channel``, adding the measurements it lacks to those already set up, e.g. from the front
-    panel, see :meth:`add_missing_measurements`, shows them in a results table, and, when
-    ``use_cursor`` is set, shows the horizontal bar cursors on ``channel`` at ``cursor_lo``
-    percent below and ``cursor_hi`` percent above ``target``, see :meth:`show_cursors`;
-    otherwise it hides the cursors.
+    panel, see :meth:`add_missing_measurements`, shows them in a results table, sets the trigger
+    level of ``channel`` to ``target``, see :meth:`set_trigger_level`, and, when ``use_cursor``
+    is set, shows the horizontal bar cursors on ``channel`` at ``cursor_lo`` percent below and
+    ``cursor_hi`` percent above ``target``, see :meth:`show_cursors`; otherwise it hides the
+    cursors.
 
     No instrument here controls the load, so before the first combination and whenever the load
     changes, the procedure pauses for the user to set it: it hands a prompt such as
@@ -267,10 +268,12 @@ class RippleProcedure(Procedure):
 
     def startup(self) -> None:
         """Connect to the scope, stop acquisition, add the missing measurements of ``channel``
-        and a results table, show or hide the cursors, and reset the measurement populations.
+        and a results table, set the trigger level to ``target``, show or hide the cursors, and
+        reset the measurement populations.
 
         See :meth:`add_missing_measurements` for the measurements added. The results table is
-        ``RESULTS_TABLE``; one the scope shows already is kept as it is. When ``use_cursor`` is
+        ``RESULTS_TABLE``; one the scope shows already is kept as it is. The trigger level of
+        ``channel`` is set to ``target``, see :meth:`set_trigger_level`. When ``use_cursor`` is
         set, the cursors are shown on ``channel`` about ``target``, see :meth:`show_cursors`;
         otherwise they are hidden, so a capture shows none left from an earlier run.
 
@@ -284,6 +287,7 @@ class RippleProcedure(Procedure):
         self.scope.acquisition_enabled = False
         self.add_missing_measurements()
         self._add_results_table()
+        self.set_trigger_level()
         if self.use_cursor:
             self.show_cursors()
         else:
@@ -491,6 +495,15 @@ class RippleProcedure(Procedure):
             log.info(f"Added scope measurement MEAS{number}: {kind} of {source}.")
             added.append(measurement)
         return added
+
+    def set_trigger_level(self) -> None:
+        """Set the trigger level of ``channel`` to ``target`` and log it.
+
+        The level applies while ``channel`` is the trigger source, which is left as set up on
+        the scope. The scope clamps a level outside the range it allows silently.
+        """
+        self.scope.channels[self.channel].trigger_level = self.target
+        log.info(f"Trigger level of CH{self.channel} set to {self.target} V.")
 
     def show_cursors(self) -> tuple[float, float]:
         """Show the horizontal bar cursors on ``channel`` below and above ``target``.

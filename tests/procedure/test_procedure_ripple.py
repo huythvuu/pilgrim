@@ -73,8 +73,9 @@ def make_scope(
     :param populations: The populations read: every ``read_populations`` takes one per number
         asked for, in the order asked.
     :param events: Receives every clear, every acquisition start or stop as its value, every
-        horizontal scale set, every bandwidth set with its channel number, every measurement
-        added with its number, every results table added with its name, every cursor pair set
+        horizontal scale set, every bandwidth set and every trigger level set with its channel
+        number, every measurement added with its number, every results table added with its
+        name, every cursor pair set
         with its channel number and its levels, every cursor hiding, and every directory made and
         image saved with its path.
     :param directories: The directories that exist on the scope; making one adds it.
@@ -89,6 +90,7 @@ def make_scope(
         channel = MagicMock()
         channel.id = number
         type(channel).bandwidth = recorded_setting(events, "bandwidth", number)
+        type(channel).trigger_level = recorded_setting(events, "trigger_level", number)
         scope.channels[number] = channel
     type(scope).horizontal_scale = recorded_setting(events, "horizontal_scale")
     scope.cursor.set_levels.side_effect = lambda channel, low, high: events.append(
@@ -195,8 +197,8 @@ def test_startup_connects_to_scope_resource(
     scope_class.assert_called_once_with("TCPIP::scope::INSTR", timeout=10_000)
     connected = "Connected to TEKTRONIX,MSO58,C031408,CF:91.1CT FV:1.34.8, found acquiring."
     assert connected in caplog.messages
-    # The measurements, the table and the cursors are added once acquisition has stopped and
-    # before the statistics clear.
+    # The measurements, the table, the trigger level and the cursors are set once acquisition
+    # has stopped and before the statistics clear.
     assert events == [
         ("acquisition",),
         ("acquisition", False),
@@ -205,10 +207,12 @@ def test_startup_connects_to_scope_resource(
         ("add_measurement", 3),
         ("add_measurement", 4),
         ("add_results_table", "TABLE1"),
+        ("trigger_level", 3, 5.0),
         ("set_levels", 3, 4.8, 5.25),
         ("clear",),
     ]
     assert "Added results table TABLE1 to the scope." in caplog.messages
+    assert "Trigger level of CH3 set to 5.0 V." in caplog.messages
     assert "Cursors shown on CH3 at 4.8 V (target 5.0 V - 4.0 %) and 5.25 V (target + 5.0 %)." in (
         caplog.messages
     )
@@ -236,6 +240,18 @@ def test_startup_hides_the_cursors_when_they_are_not_used(
     scope.cursor.set_levels.assert_not_called()
     assert ("cursor_enabled", False) in events
     assert "Cursors hidden." in caplog.messages
+
+
+def test_set_trigger_level_puts_the_trigger_at_the_target(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope([], [], events)
+    procedure = make_running_procedure(monkeypatch, scope, channel=2, target=-3.3)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        procedure.set_trigger_level()
+    assert events == [("trigger_level", 2, -3.3)]
+    assert "Trigger level of CH2 set to -3.3 V." in caplog.messages
 
 
 def make_started_procedure(
