@@ -2,6 +2,7 @@
 
 import pytest
 from pymeasure.display.inputs import BooleanInput, IntegerInput, ScientificInput, StringInput
+from pymeasure.display.Qt import QtWidgets
 from pytestqt.qtbot import QtBot
 
 from pilgrim.gui.ripple.components import ListInput, RippleInputsWidget, VisaResourceInput
@@ -26,8 +27,11 @@ def test_uses_an_input_suited_to_each_parameter(widget: RippleInputsWidget) -> N
     assert isinstance(widget.pop_min, IntegerInput)
     assert isinstance(widget.target, ScientificInput)
     assert isinstance(widget.use_cursor, BooleanInput)
-    assert isinstance(widget.cursor_hi, ScientificInput)
-    assert isinstance(widget.cursor_lo, ScientificInput)
+    assert isinstance(widget.cursor_absolute, BooleanInput)
+    assert isinstance(widget.cursor_hi_rel, ScientificInput)
+    assert isinstance(widget.cursor_lo_rel, ScientificInput)
+    assert isinstance(widget.cursor_hi_abs, ScientificInput)
+    assert isinstance(widget.cursor_lo_abs, ScientificInput)
     assert type(widget.name) is StringInput
     assert type(widget.scope_capture_dir) is StringInput
 
@@ -40,21 +44,74 @@ def test_shows_the_defaults(widget: RippleInputsWidget) -> None:
     assert (widget.channel.minimum(), widget.channel.maximum()) == (1, 8)
     assert widget.target.value() == 0
     assert widget.use_cursor.isChecked()
-    assert (widget.cursor_hi.value(), widget.cursor_lo.value()) == (0, 0)
-    assert (widget.cursor_hi.minimum(), widget.cursor_lo.minimum()) == (0, 0)
+    assert not widget.cursor_absolute.isChecked()
+    assert (widget.cursor_hi_rel.value(), widget.cursor_lo_rel.value()) == (0, 0)
+    assert (widget.cursor_hi_rel.minimum(), widget.cursor_lo_rel.minimum()) == (0, 0)
+    assert (widget.cursor_hi_abs.value(), widget.cursor_lo_abs.value()) == (0, 0)
+    assert widget.cursor_lo_abs.minimum() < 0
+
+
+def cursor_elements(widget: RippleInputsWidget, kind: str) -> tuple[QtWidgets.QWidget, ...]:
+    """Return the inputs and labels of the relative or absolute cursor levels."""
+    names = (f"cursor_hi_{kind}", f"cursor_lo_{kind}")
+    return tuple(getattr(widget, name) for name in names) + tuple(
+        widget.labels[name] for name in names
+    )
 
 
 def test_cursor_levels_are_shown_only_while_cursors_are_used(widget: RippleInputsWidget) -> None:
     widget.show()
-    cursor_inputs = (widget.cursor_hi, widget.cursor_lo)
-    cursor_labels = (widget.labels["cursor_hi"], widget.labels["cursor_lo"])
-    assert all(not element.isHidden() for element in cursor_inputs + cursor_labels)
+    relative, absolute = cursor_elements(widget, "rel"), cursor_elements(widget, "abs")
+    assert all(not element.isHidden() for element in relative)
+    assert all(element.isHidden() for element in absolute)
+    assert not widget.cursor_absolute.isHidden()
     widget.use_cursor.setChecked(False)
-    assert all(element.isHidden() for element in cursor_inputs + cursor_labels)
+    assert all(element.isHidden() for element in relative + absolute)
+    assert widget.cursor_absolute.isHidden()
     # The target stays, since the procedure uses it for the results as well.
     assert not widget.target.isHidden()
     widget.use_cursor.setChecked(True)
-    assert all(not element.isHidden() for element in cursor_inputs + cursor_labels)
+    assert all(not element.isHidden() for element in relative)
+    assert all(element.isHidden() for element in absolute)
+    assert not widget.cursor_absolute.isHidden()
+
+
+def test_absolute_box_swaps_the_relative_cursor_levels_for_the_absolute_ones(
+    widget: RippleInputsWidget,
+) -> None:
+    widget.show()
+    relative, absolute = cursor_elements(widget, "rel"), cursor_elements(widget, "abs")
+    widget.cursor_absolute.setChecked(True)
+    assert all(element.isHidden() for element in relative)
+    assert all(not element.isHidden() for element in absolute)
+    # Neither pair shows while the cursors are not used, whichever is chosen.
+    widget.use_cursor.setChecked(False)
+    assert all(element.isHidden() for element in relative + absolute)
+    widget.use_cursor.setChecked(True)
+    assert all(element.isHidden() for element in relative)
+    assert all(not element.isHidden() for element in absolute)
+    widget.cursor_absolute.setChecked(False)
+    assert all(not element.isHidden() for element in relative)
+    assert all(element.isHidden() for element in absolute)
+
+
+def test_cursor_boxes_share_a_line(widget: RippleInputsWidget) -> None:
+    assert widget.cursor_absolute.text() == "Absolute"
+    parent = widget.use_cursor.parentWidget()
+    assert parent is not None
+    column = parent.layout()
+    assert isinstance(column, QtWidgets.QBoxLayout)
+    items = [column.itemAt(index) for index in range(column.count())]
+    layouts = [item.layout() if item is not None else None for item in items]
+    ((index, row),) = [(i, layout) for i, layout in enumerate(layouts) if layout is not None]
+    assert row.indexOf(widget.use_cursor) == 0
+    assert row.indexOf(widget.cursor_absolute) == 1
+    # The line takes the place of the first box in the column.
+    assert column.indexOf(widget.target) < index < column.indexOf(widget.cursor_hi_rel)
+    # Showing the parameters of a run keeps the short text of the box.
+    procedure = widget.get_procedure()
+    widget.set_parameters(procedure.parameter_objects())
+    assert widget.cursor_absolute.text() == "Absolute"
 
 
 def test_get_procedure_reads_the_inputs(widget: RippleInputsWidget) -> None:
@@ -66,15 +123,19 @@ def test_get_procedure_reads_the_inputs(widget: RippleInputsWidget) -> None:
     widget.bandwidths.setText("[20e6, 1e9] Hz")
     widget.target.setValue(12)
     widget.use_cursor.setChecked(False)
-    widget.cursor_hi.setValue(5)
-    widget.cursor_lo.setValue(4)
+    widget.cursor_absolute.setChecked(True)
+    widget.cursor_hi_rel.setValue(5)
+    widget.cursor_lo_rel.setValue(4)
+    widget.cursor_hi_abs.setValue(12.5)
+    widget.cursor_lo_abs.setValue(-11.5)
     procedure = widget.get_procedure()
     assert isinstance(procedure, RippleProcedure)
     assert procedure.scope_resource == "USB0::0x0699::0x0522::C031408::INSTR"
     assert (procedure.channel, procedure.vin) == (5, 54)
-    assert (procedure.target, procedure.use_cursor) == (12, False)
-    # Hidden cursor levels are still read, in case the box is checked again.
-    assert (procedure.cursor_hi, procedure.cursor_lo) == (5, 4)
+    assert (procedure.target, procedure.use_cursor, procedure.cursor_absolute) == (12, False, True)
+    # Hidden cursor levels are still read, in case the boxes are changed again.
+    assert (procedure.cursor_hi_rel, procedure.cursor_lo_rel) == (5, 4)
+    assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (12.5, -11.5)
     assert procedure.loads == [0, 0.5]
     # Pint lands a prefixed value such as 2.5 us within rounding of the plain number.
     assert procedure.horizontal_divs == pytest.approx([2.5e-6])
@@ -97,5 +158,6 @@ def test_procedure_class_keeps_no_input_classes(widget: RippleInputsWidget) -> N
     assert RippleProcedure.scope_resource.ui_class is None
     assert RippleProcedure.loads.ui_class is None
     assert RippleProcedure().parameter_objects()["bandwidths"].ui_class is None
-    assert RippleProcedure.cursor_hi.group_by == {}
-    assert RippleProcedure().parameter_objects()["cursor_lo"].group_by == {}
+    assert RippleProcedure.cursor_absolute.group_by == {}
+    assert RippleProcedure.cursor_hi_rel.group_by == {}
+    assert RippleProcedure().parameter_objects()["cursor_lo_abs"].group_by == {}

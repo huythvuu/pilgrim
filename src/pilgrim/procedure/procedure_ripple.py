@@ -150,9 +150,10 @@ class RippleProcedure(Procedure):
     ``channel``, adding the measurements it lacks to those already set up, e.g. from the front
     panel, see :meth:`add_missing_measurements`, shows them in a results table, sets the trigger
     level of ``channel`` to ``target``, see :meth:`set_trigger_level`, and, when ``use_cursor``
-    is set, shows the horizontal bar cursors on ``channel`` at ``cursor_lo`` percent below and
-    ``cursor_hi`` percent above ``target``, see :meth:`show_cursors`; otherwise it hides the
-    cursors.
+    is set, shows the horizontal bar cursors on ``channel``, see :meth:`show_cursors`: at
+    ``cursor_lo_abs`` and ``cursor_hi_abs`` volts when ``cursor_absolute`` is set, otherwise
+    ``cursor_lo_rel`` percent below and ``cursor_hi_rel`` percent above ``target``. Without
+    ``use_cursor`` it hides the cursors.
 
     No instrument here controls the load, so before the first combination and whenever the load
     changes, the procedure pauses for the user to set it: it hands a prompt such as
@@ -211,19 +212,36 @@ class RippleProcedure(Procedure):
         default=True,
         description="Show the cursors about the target on the scope, or hide them",
     )
-    cursor_hi = FloatParameter(
-        "Cursor high",
-        units="%",
-        default=0,
-        minimum=0,
-        description="High cursor value given as a percentage above target",
+    cursor_absolute = BooleanParameter(
+        "Cursor as absolute values",
+        default=False,
+        description="Place the cursors at the absolute levels, or the relative ones",
     )
-    cursor_lo = FloatParameter(
-        "Cursor low",
+    cursor_hi_rel = FloatParameter(
+        "Relative cursor high",
         units="%",
         default=0,
         minimum=0,
-        description="Low cursor value given as a percentage below target",
+        description="High cursor level given as a percentage above target",
+    )
+    cursor_lo_rel = FloatParameter(
+        "Relative cursor low",
+        units="%",
+        default=0,
+        minimum=0,
+        description="Low cursor level given as a percentage below target",
+    )
+    cursor_hi_abs = FloatParameter(
+        "Absolute cursor high",
+        units="V",
+        default=0,
+        description="High cursor level given as a voltage",
+    )
+    cursor_lo_abs = FloatParameter(
+        "Absolute cursor low",
+        units="V",
+        default=0,
+        description="Low cursor level given as a voltage",
     )
     pop_min = IntegerParameter(
         "Sample population minimum",
@@ -276,8 +294,8 @@ class RippleProcedure(Procedure):
         See :meth:`add_missing_measurements` for the measurements added. The results table is
         ``RESULTS_TABLE``; one the scope shows already is kept as it is. The trigger level of
         ``channel`` is set to ``target``, see :meth:`set_trigger_level`. When ``use_cursor`` is
-        set, the cursors are shown on ``channel`` about ``target``, see :meth:`show_cursors`;
-        otherwise they are hidden, so a capture shows none left from an earlier run.
+        set, the cursors are shown on ``channel``, see :meth:`show_cursors`; otherwise they are
+        hidden, so a capture shows none left from an earlier run.
 
         :raises ValueError: If ``use_cursor`` is set and a cursor level lies outside the
             voltages the scope shows of ``channel``.
@@ -509,22 +527,26 @@ class RippleProcedure(Procedure):
         log.info(f"Trigger level of CH{self.channel} set to {self.target} V.")
 
     def show_cursors(self) -> tuple[float, float]:
-        """Show the horizontal bar cursors on ``channel`` below and above ``target``.
+        """Show the horizontal bar cursors on ``channel`` at the low and high levels.
 
-        Cursor A marks the low level, ``cursor_lo`` percent below ``target``, and cursor B the
-        high level, ``cursor_hi`` percent above it, see :func:`cursor_levels`. The scope shows
+        Cursor A marks the low level and cursor B the high one. With ``cursor_absolute`` set,
+        the levels are ``cursor_lo_abs`` and ``cursor_hi_abs``, and ``target`` plays no part;
+        otherwise the low level lies ``cursor_lo_rel`` percent below ``target`` and the high
+        level ``cursor_hi_rel`` percent above it, see :func:`cursor_levels`. The scope shows
         the cursors, on ``channel``, as soon as the levels are set, and logs them.
 
         :returns: The low and high levels in volts.
         :raises ValueError: If a level lies outside the voltages the scope shows of ``channel``;
             change the channel's scale, position or offset on the scope first.
         """
-        low, high = cursor_levels(self.target, self.cursor_lo, self.cursor_hi)
+        if self.cursor_absolute:
+            low, high = self.cursor_lo_abs, self.cursor_hi_abs
+            origin = "absolute"
+        else:
+            low, high = cursor_levels(self.target, self.cursor_lo_rel, self.cursor_hi_rel)
+            origin = f"target {self.target} V - {self.cursor_lo_rel} % and + {self.cursor_hi_rel} %"
         self.scope.cursor.set_levels(self.scope.channels[self.channel], low, high)
-        log.info(
-            f"Cursors shown on CH{self.channel} at {low} V (target {self.target} V - "
-            f"{self.cursor_lo} %) and {high} V (target + {self.cursor_hi} %)."
-        )
+        log.info(f"Cursors shown on CH{self.channel} at {low} V and {high} V ({origin}).")
         return low, high
 
     def hide_cursors(self) -> None:

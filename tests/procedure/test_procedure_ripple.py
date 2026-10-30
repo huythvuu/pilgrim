@@ -175,6 +175,9 @@ def test_parameters_have_defaults() -> None:
     assert procedure.name == "ripple"
     assert procedure.scope_resource == ""
     assert procedure.use_cursor is True
+    assert procedure.cursor_absolute is False
+    assert (procedure.cursor_hi_rel, procedure.cursor_lo_rel) == (0, 0)
+    assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (0, 0)
 
 
 def test_startup_connects_to_scope_resource(
@@ -189,7 +192,11 @@ def test_startup_connects_to_scope_resource(
     scope_class = MagicMock(return_value=scope)
     monkeypatch.setattr(procedure_ripple, "TektronixMSO58", scope_class)
     procedure = RippleProcedure(
-        scope_resource="TCPIP::scope::INSTR", channel=3, target=5, cursor_lo=4, cursor_hi=5
+        scope_resource="TCPIP::scope::INSTR",
+        channel=3,
+        target=5,
+        cursor_lo_rel=4,
+        cursor_hi_rel=5,
     )
     procedure.refresh_parameters()
     with caplog.at_level(logging.INFO, logger=LOGGER):
@@ -213,8 +220,9 @@ def test_startup_connects_to_scope_resource(
     ]
     assert "Added results table TABLE1 to the scope." in caplog.messages
     assert "Trigger level of CH3 set to 5.0 V." in caplog.messages
-    assert "Cursors shown on CH3 at 4.8 V (target 5.0 V - 4.0 %) and 5.25 V (target + 5.0 %)." in (
-        caplog.messages
+    assert (
+        "Cursors shown on CH3 at 4.8 V and 5.25 V (target 5.0 V - 4.0 % and + 5.0 %)."
+        in caplog.messages
     )
     added = [(m.id, m.type, m.source) for m in scope.measurements.values()]
     assert added == [
@@ -233,7 +241,13 @@ def test_startup_hides_the_cursors_when_they_are_not_used(
     events: list[tuple[Any, ...]] = []
     scope = make_scope([], [], events, kinds=channel_kinds("CH3"))
     procedure = make_started_procedure(
-        monkeypatch, scope, channel=3, target=5, cursor_lo=4, cursor_hi=5, use_cursor=False
+        monkeypatch,
+        scope,
+        channel=3,
+        target=5,
+        cursor_lo_rel=4,
+        cursor_hi_rel=5,
+        use_cursor=False,
     )
     with caplog.at_level(logging.INFO, logger=LOGGER):
         procedure.startup()
@@ -311,11 +325,34 @@ def test_show_cursors_puts_the_cursors_on_the_channel_about_the_target(
     events: list[tuple[Any, ...]] = []
     scope = make_scope([], [], events)
     procedure = make_running_procedure(
-        monkeypatch, scope, channel=2, target=-5, cursor_lo=4, cursor_hi=5
+        monkeypatch, scope, channel=2, target=-5, cursor_lo_rel=4, cursor_hi_rel=5
     )
     # The low cursor lies below a negative target and the high one above it.
     assert procedure.show_cursors() == (-5.2, -4.75)
     assert events == [("set_levels", 2, -5.2, -4.75)]
+
+
+def test_show_cursors_puts_the_cursors_at_the_absolute_levels(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope([], [], events)
+    # The relative levels and the target play no part while the absolute levels are used.
+    procedure = make_running_procedure(
+        monkeypatch,
+        scope,
+        channel=2,
+        target=-5,
+        cursor_absolute=True,
+        cursor_lo_abs=-5.5,
+        cursor_hi_abs=-4.5,
+        cursor_lo_rel=4,
+        cursor_hi_rel=5,
+    )
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert procedure.show_cursors() == (-5.5, -4.5)
+    assert events == [("set_levels", 2, -5.5, -4.5)]
+    assert "Cursors shown on CH2 at -5.5 V and -4.5 V (absolute)." in caplog.messages
 
 
 def test_show_cursors_of_the_defaults_meet_at_zero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,7 +368,7 @@ def test_startup_raises_when_a_cursor_level_is_off_screen(monkeypatch: pytest.Mo
     scope = make_scope([], [], events)
     message = "Level 5.25 V is outside the screen range of CH1, -5.0 V to 5.0 V"
     scope.cursor.set_levels.side_effect = ValueError(message)
-    procedure = make_started_procedure(monkeypatch, scope, target=5, cursor_hi=5)
+    procedure = make_started_procedure(monkeypatch, scope, target=5, cursor_hi_rel=5)
     with pytest.raises(ValueError, match=re.escape(message)):
         procedure.startup()
     assert ("clear",) not in events
@@ -340,9 +377,15 @@ def test_startup_raises_when_a_cursor_level_is_off_screen(monkeypatch: pytest.Mo
 @pytest.mark.parametrize("percent", [-1, -0.5])
 def test_negative_cursor_percentages_are_rejected(percent: float) -> None:
     with pytest.raises(ValueError, match="minimum"):
-        RippleProcedure(cursor_lo=percent).refresh_parameters()
+        RippleProcedure(cursor_lo_rel=percent).refresh_parameters()
     with pytest.raises(ValueError, match="minimum"):
-        RippleProcedure(cursor_hi=percent).refresh_parameters()
+        RippleProcedure(cursor_hi_rel=percent).refresh_parameters()
+
+
+def test_absolute_cursor_levels_may_be_negative() -> None:
+    procedure = RippleProcedure(cursor_lo_abs=-1.5, cursor_hi_abs=-0.5)
+    procedure.refresh_parameters()
+    assert (procedure.cursor_lo_abs, procedure.cursor_hi_abs) == (-1.5, -0.5)
 
 
 @pytest.mark.parametrize(
