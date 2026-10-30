@@ -16,7 +16,7 @@ from pilgrim.gui.ripple.components import MessageWidget, RippleInputsWidget
 from pilgrim.gui.ripple.components.message import PAUSING_TEXT, RUNNING_TEXT
 from pilgrim.gui.ripple.window import DEFAULT_FILENAME, SPLITTER_HANDLE_WIDTH
 from pilgrim.procedure import RippleProcedure, procedure_ripple
-from pilgrim.procedure.procedure_ripple import PAUSE_PROMPT
+from pilgrim.procedure.procedure_ripple import PAUSE_PROMPT, capture_hyperlink
 
 RESOURCE = "USB0::0x0699::0x0522::C031408::INSTR"
 RUN_TIMEOUT = 10_000
@@ -215,6 +215,10 @@ def test_run_pauses_for_every_load_and_resumes_on_the_button(
     assert list(experiment.results.data["Load"]) == [0, 50]
     captures = ["0Vin ripple 0Load 1us 20MHz.png", "0Vin ripple 50Load 1us 20MHz.png"]
     assert sorted(path.name for path in (tmp_path / "captures").iterdir()) == captures
+    # The results file links each row to its capture, read back from the file as written.
+    assert list(experiment.results.data["Capture"]) == [
+        capture_hyperlink(Path("captures") / name) for name in captures
+    ]
     assert window.captures_widget.directory == tmp_path / "captures"
     window.captures_widget.refresh()
     assert window.captures_widget.file_list.count() == len(captures)

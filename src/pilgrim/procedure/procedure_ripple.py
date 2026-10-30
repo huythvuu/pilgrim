@@ -6,7 +6,7 @@ import re
 import threading
 from collections.abc import Callable
 from enum import IntEnum
-from pathlib import Path
+from pathlib import Path, PurePath
 from time import perf_counter, sleep
 from typing import Any, ClassVar, NamedTuple
 
@@ -61,6 +61,7 @@ VMIN_COLUMN = "Min Vmin (V)"
 PK2PK_COLUMN = "Mean Vpk2pk (V)"
 OVERSHOOT_COLUMN = "Overshoot (%)"
 UNDERSHOOT_COLUMN = "Undershoot (%)"
+CAPTURE_COLUMN = "Capture"
 # The measurement types of the output voltage channel the scope must have; startup adds the
 # missing ones.
 REQUIRED_TYPES = ["MAXIMUM", "MINIMUM", "MEAN", "PK2PK"]
@@ -123,6 +124,22 @@ def format_with_si_prefix(value: float, unit: str) -> str:
         _SI_PREFIXES[-1],
     )
     return f"{value / scale:g}{prefix}{unit}"
+
+
+def capture_hyperlink(path: PurePath) -> str:
+    """Return the Excel formula that links a results cell to a capture.
+
+    Excel evaluates the formula when it opens the results file, and the link resolves relative
+    to that file, so the capture opens on a click as long as it stays in its subdirectory
+    next to the results file. The formula takes only the link, which Excel then also shows
+    as the cell text: the results file does not quote its fields, so a second argument's
+    comma would be read as a column separator.
+
+    :param path: The path of the capture relative to the results file.
+    :returns: The formula, e.g. ``'=HYPERLINK("captures/x.png")'``, with the path separator of
+        this computer.
+    """
+    return f'=HYPERLINK("{path}")'
 
 
 class RippleProcedure(Procedure):
@@ -225,6 +242,7 @@ class RippleProcedure(Procedure):
         *(result.column for result in RESULTS),
         OVERSHOOT_COLUMN,
         UNDERSHOOT_COLUMN,
+        CAPTURE_COLUMN,
     ]
 
     scope: TektronixMSO58
@@ -290,9 +308,10 @@ class RippleProcedure(Procedure):
         not exist. Every combination records one row of :attr:`DATA_COLUMNS`, with
         the mean of the first MEAN measurement of ``channel`` that the scope lists, the maximum
         of its first MAXIMUM measurement, the minimum of its first MINIMUM measurement and the
-        mean of its first PK2PK measurement, each over all acquisitions, and the overshoot and
-        undershoot computed from them, see :func:`deviation_percent`. Stops early when asked
-        to.
+        mean of its first PK2PK measurement, each over all acquisitions, the overshoot and
+        undershoot computed from them, see :func:`deviation_percent`, and a link to the
+        capture that opens it from Excel, see :func:`capture_hyperlink`. Stops early when
+        asked to.
 
         :raises ValueError: If the scope has no measurements or no MEAN, MAXIMUM, MINIMUM or
             PK2PK measurement of ``channel``, which :meth:`startup` adds, or a capture could
@@ -352,7 +371,8 @@ class RippleProcedure(Procedure):
             file_name = self.capture_file_name(load, horizontal_div, bandwidth)
             scope_path = f"{scope_directory}/{file_name}"
             self._save_capture(scope_path)
-            self._cut_capture(scope_path, local_directory / file_name)
+            local_path = local_directory / file_name
+            self._cut_capture(scope_path, local_path)
             self.emit(
                 "results",
                 {
@@ -361,6 +381,9 @@ class RippleProcedure(Procedure):
                     HORIZONTAL_DIV_COLUMN: horizontal_div,
                     BANDWIDTH_COLUMN: bandwidth,
                     **results,
+                    CAPTURE_COLUMN: capture_hyperlink(
+                        local_path.relative_to(self.results_directory)
+                    ),
                 },
             )
             self.emit("progress", 100 * done / len(combinations))

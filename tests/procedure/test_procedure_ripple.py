@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 
 from pilgrim.procedure import RippleProcedure, procedure_ripple
+from pilgrim.procedure.procedure_ripple import capture_hyperlink
 
 DEFAULT_DIRECTORIES = ["C:/Temp", "C:/Temp/Ripple"]
 LOGGER = "pilgrim.procedure.procedure_ripple"
@@ -464,10 +465,14 @@ def test_execute_acquires_until_population_at_every_combination(
         "Overshoot (%)": 300.0,
         "Undershoot (%)": 700.0,
     }
+    captures = {
+        bandwidth: capture_hyperlink(Path("captures") / f"12Vin ripple 0Load 1us {text}.png")
+        for bandwidth, text in [(20e6, "20MHz"), (1e9, "1GHz")]
+    }
     assert [call.args for call in emit.call_args_list] == [
-        ("results", {**row, "Bandwidth (Hz)": 20e6, **values}),
+        ("results", {**row, "Bandwidth (Hz)": 20e6, **values, "Capture": captures[20e6]}),
         ("progress", 50.0),
-        ("results", {**row, "Bandwidth (Hz)": 1e9, **values}),
+        ("results", {**row, "Bandwidth (Hz)": 1e9, **values, "Capture": captures[1e9]}),
         ("progress", 100.0),
     ]
 
@@ -504,6 +509,7 @@ def test_results_are_rounded_to_five_decimal_places(monkeypatch: pytest.MonkeyPa
             "Mean Vpk2pk (V)": 0.0,
             "Overshoot (%)": 710.00398,
             "Undershoot (%)": 2529.99605,
+            "Capture": capture_hyperlink(Path("captures") / "12Vin ripple 0Load 1us 20MHz.png"),
         }
     ]
 
@@ -913,6 +919,15 @@ def test_capture_directory_error_other_than_missing_is_raised(
     with pytest.raises(ValueError, match="257"):
         procedure.execute()
     scope.make_directory.assert_not_called()
+
+
+def test_capture_hyperlink_is_an_excel_formula_with_the_relative_path() -> None:
+    path = Path("captures") / "12Vin ripple 50Load 1ms 250MHz.png"
+    formula = capture_hyperlink(path)
+    assert formula == f'=HYPERLINK("{path}")'
+    # The results file splits its rows on commas and comments on hashes.
+    assert "," not in formula
+    assert "#" not in formula
 
 
 def test_capture_file_name() -> None:
