@@ -5,6 +5,7 @@ import math
 import re
 import threading
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from itertools import chain, repeat
 from pathlib import Path
 from typing import Any
@@ -877,6 +878,34 @@ def test_default_pause_handler_prompts_on_the_console(monkeypatch: pytest.Monkey
     assert procedure.pause_handler == procedure.prompt_on_console
     assert procedure.pause("Set the load to 50.") is True
     assert prompts == ["Set the load to 50. Press Enter to continue. "]
+
+
+def test_make_run_directory_names_it_from_the_time(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 30, 14, 35, 12)
+    directory = procedure_ripple.make_run_directory(tmp_path / "results", now)
+    assert directory == tmp_path / "results" / "Results_2026_10_30_14-35-12"
+    assert directory.is_dir()
+
+
+def test_make_run_directory_appends_an_index_within_a_second(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 30, 14, 35, 12)
+    first = procedure_ripple.make_run_directory(tmp_path, now)
+    second = procedure_ripple.make_run_directory(tmp_path, now)
+    third = procedure_ripple.make_run_directory(tmp_path, now)
+    assert [path.name for path in (first, second, third)] == [
+        "Results_2026_10_30_14-35-12",
+        "Results_2026_10_30_14-35-12_2",
+        "Results_2026_10_30_14-35-12_3",
+    ]
+    assert all(path.is_dir() for path in (first, second, third))
+
+
+def test_make_run_directory_uses_the_current_time(tmp_path: Path) -> None:
+    before = datetime.now().replace(microsecond=0)
+    directory = procedure_ripple.make_run_directory(tmp_path)
+    after = datetime.now()
+    queued = datetime.strptime(directory.name, procedure_ripple.RUN_DIRECTORY_FORMAT)
+    assert before <= queued <= after
 
 
 def test_capture_directory_is_captures_in_the_results_directory() -> None:

@@ -1,6 +1,7 @@
 """Tests for the ripple window, with the scope replaced by a mock."""
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from pilgrim.procedure.procedure_ripple import PAUSE_PROMPT, capture_hyperlink
 
 RESOURCE = "USB0::0x0699::0x0522::C031408::INSTR"
 RUN_TIMEOUT = 10_000
+#: The name of a run directory, with an index appended when a second has several.
+RUN_DIRECTORY = re.compile(r"Results_\d{4}_\d{2}_\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?")
 
 
 def make_scope() -> MagicMock:
@@ -69,6 +72,13 @@ def window(qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rip
     window.inputs.horizontal_divs.setText("[1 us]")
     window.inputs.bandwidths.setText("[20 MHz]")
     return window
+
+
+def run_directories(results_directory: Path) -> list[Path]:
+    """Return the run directories in the results directory, oldest first, which is all it holds."""
+    directories = sorted(results_directory.iterdir(), key=lambda path: path.stat().st_ctime_ns)
+    assert all(path.is_dir() and RUN_DIRECTORY.fullmatch(path.name) for path in directories)
+    return directories
 
 
 def queue_without_running(window: RippleWindow, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
@@ -178,10 +188,41 @@ def test_queue_builds_the_procedure_from_the_inputs(
     assert procedure.pause_handler == window.message_widget.prompt
     assert procedure.scope_resource == RESOURCE
     assert procedure.combinations() == [(0, 1e-6, 20e6), (50, 1e-6, 20e6)]
-    assert Path(queued[0].data_filename) == tmp_path / "ripple_0Vin_1.csv"
-    # The captures go next to the results file.
-    assert procedure.results_directory == tmp_path
-    assert procedure.capture_directory == tmp_path / "captures"
+    # The run gets its own directory, named from the time, where the results file goes and
+    # the captures next to it.
+    (run_directory,) = run_directories(tmp_path)
+    assert Path(queued[0].data_filename) == run_directory / "ripple_0Vin_1.csv"
+    assert procedure.results_directory == run_directory
+    assert procedure.capture_directory == run_directory / "captures"
+
+
+def test_each_queued_run_gets_its_own_directory(
+    window: RippleWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queued = queue_without_running(window, monkeypatch)
+    window.queue()
+    window.queue()
+    first, second = run_directories(tmp_path)
+    assert first != second
+    assert [Path(experiment.data_filename).parent for experiment in queued] == [first, second]
+    assert [Path(experiment.data_filename).name for experiment in queued] == [
+        "ripple_0Vin_1.csv",
+        "ripple_0Vin_1.csv",
+    ]
+
+
+def test_queue_reports_an_invalid_file_name_and_leaves_no_directory(
+    window: RippleWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queued = queue_without_running(window, monkeypatch)
+    reports: list[str] = []
+    monkeypatch.setattr(window, "report_invalid_parameters", reports.append)
+    window.filename = "{No such parameter}"
+    window.queue()
+    assert queued == []
+    assert len(reports) == 1
+    assert reports[0].startswith("The file name is not valid:")
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_queue_reports_invalid_parameters_instead_of_raising(
@@ -203,16 +244,17 @@ def test_run_pauses_for_every_load_and_resumes_on_the_button(
     window.queue()
     wait_for_prompt(qtbot, window, 0)
     assert not window.message_widget.pause_button.isEnabled()
-    # The tabs name the files of the run as soon as it starts.
-    assert window.table_widget.banner.path == tmp_path / "ripple_0Vin_1.csv"
-    assert window.captures_widget.banner.path == tmp_path / "captures"
-    assert window.log_widget.banner.path == tmp_path / "ripple_0Vin_1.log"
-    assert window.run_log.path == tmp_path / "ripple_0Vin_1.log"
+    # The tabs name the files of the run, in its own directory, as soon as it starts.
+    (run_directory,) = run_directories(tmp_path)
+    assert window.table_widget.banner.path == run_directory / "ripple_0Vin_1.csv"
+    assert window.captures_widget.banner.path == run_directory / "captures"
+    assert window.log_widget.banner.path == run_directory / "ripple_0Vin_1.log"
+    assert window.run_log.path == run_directory / "ripple_0Vin_1.log"
     window.message_widget.resume_button.click()
     assert window.statusBar().currentMessage() == ""
     assert window.message_widget.message.text() == RUNNING_TEXT
     wait_for_prompt(qtbot, window, 50)
-    assert sorted(path.name for path in (tmp_path / "captures").iterdir()) == [
+    assert sorted(path.name for path in (run_directory / "captures").iterdir()) == [
         "0Vin ripple 0A 1us 20MHz.png"
     ]
     window.message_widget.resume_button.click()
@@ -222,12 +264,17 @@ def test_run_pauses_for_every_load_and_resumes_on_the_button(
     assert not window.message_widget.pause_button.isEnabled()
     assert list(experiment.results.data["Load (A)"]) == [0, 50]
     captures = ["0Vin ripple 0A 1us 20MHz.png", "0Vin ripple 50A 1us 20MHz.png"]
-    assert sorted(path.name for path in (tmp_path / "captures").iterdir()) == captures
+    assert sorted(path.name for path in (run_directory / "captures").iterdir()) == captures
+    assert sorted(path.name for path in run_directory.iterdir()) == [
+        "captures",
+        "ripple_0Vin_1.csv",
+        "ripple_0Vin_1.log",
+    ]
     # The results file links each row to its capture, read back from the file as written.
     assert list(experiment.results.data["Capture"]) == [
         capture_hyperlink(Path("captures") / name) for name in captures
     ]
-    assert window.captures_widget.directory == tmp_path / "captures"
+    assert window.captures_widget.directory == run_directory / "captures"
     window.captures_widget.refresh()
     assert window.captures_widget.file_list.count() == len(captures)
 
@@ -285,7 +332,9 @@ def test_each_run_saves_its_log_next_to_its_results(
         logs.append(Path(experiment.data_filename).with_suffix(".log"))
         assert window.run_log.path == logs[-1]
         assert window.log_widget.banner.path == logs[-1]
-    assert [path.name for path in logs] == ["ripple_0Vin_1.log", "ripple_0Vin_2.log"]
+    # Each run has its own directory, so both logs take the first index.
+    assert [path.name for path in logs] == ["ripple_0Vin_1.log", "ripple_0Vin_1.log"]
+    assert [path.parent for path in logs] == run_directories(tmp_path)
     for path in logs:
         text = path.read_text(encoding="utf-8")
         assert "Connecting to the scope." in text

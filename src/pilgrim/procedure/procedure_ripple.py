@@ -5,6 +5,7 @@ import math
 import re
 import threading
 from collections.abc import Callable
+from datetime import datetime
 from enum import IntEnum
 from pathlib import Path, PurePath
 from time import perf_counter, sleep
@@ -94,6 +95,8 @@ RESULTS_TABLE = "TABLE1"
 #: The results directory of a procedure no runner has set one on, relative to the working
 #: directory.
 DEFAULT_RESULTS_DIRECTORY = "results"
+#: The name of the directory of a run, from the time it is queued, see :func:`make_run_directory`.
+RUN_DIRECTORY_FORMAT = "Results_%Y_%m_%d_%H-%M-%S"
 
 # The SI prefixes of the capture file names, from the largest down; "u" stands for micro.
 _SI_PREFIXES = [
@@ -127,6 +130,31 @@ def format_with_si_prefix(value: float, unit: str) -> str:
         _SI_PREFIXES[-1],
     )
     return f"{value / scale:g}{prefix}{unit}"
+
+
+def make_run_directory(parent: Path, now: datetime | None = None) -> Path:
+    """Create the directory of a run inside ``parent`` and return it.
+
+    The directory is named by :data:`RUN_DIRECTORY_FORMAT` from ``now``, as in
+    ``Results_2026_10_30_14-35-12``; if a run of that second exists already, an index is
+    appended, as in ``Results_2026_10_30_14-35-12_2``. ``parent`` is created if it does not
+    exist.
+
+    :param parent: The directory the run directory goes in.
+    :param now: The time of the run; the current time when None.
+    :returns: The directory created.
+    """
+    name = (datetime.now() if now is None else now).strftime(RUN_DIRECTORY_FORMAT)
+    parent.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        directory = parent / (name if index == 1 else f"{name}_{index}")
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            index += 1
+        else:
+            return directory
 
 
 def capture_hyperlink(path: PurePath) -> str:
@@ -276,7 +304,7 @@ class RippleProcedure(Procedure):
         self.pause_handler: Callable[[str], None] = self.prompt_on_console
         #: The directory on this computer the results file of the run goes to; the captures are
         #: moved to :attr:`capture_directory` inside it. The runner sets it, as the ripple window
-        #: does from its results directory when it queues a run.
+        #: does to the directory :func:`make_run_directory` creates when it queues a run.
         self.results_directory: Path = Path(DEFAULT_RESULTS_DIRECTORY)
 
     @property

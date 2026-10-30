@@ -1,11 +1,13 @@
 """Main window of the ripple GUI."""
 
 import logging
+import tempfile
 from pathlib import Path
 
 from pymeasure.display.manager import Experiment
 from pymeasure.display.Qt import QtCore, QtGui, QtWidgets
 from pymeasure.display.windows import ManagedWindowBase
+from pymeasure.experiment import Results, unique_filename
 
 from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.procedure_ripple import (
@@ -16,6 +18,7 @@ from pilgrim.procedure.procedure_ripple import (
     VMAX_COLUMN,
     VMEAN_COLUMN,
     VMIN_COLUMN,
+    make_run_directory,
 )
 
 from .components import (
@@ -52,10 +55,11 @@ class RippleWindow(ManagedWindowBase):
     capture directory or the log file of the running procedure and opens it on a button.
     Aborting a paused procedure ends it.
 
-    The log of each run is also saved next to its results file, under the same name with the
-    ``.log`` extension (see :class:`RunLogHandler`), and the captures go to ``captures`` in the
-    same directory. The log tab shows records from INFO up, while the file holds every record
-    that reaches it, DEBUG included.
+    Each run queued gets its own directory inside the results directory, named from the time
+    it is queued (see :func:`make_run_directory`). The results file goes there, with the log of
+    the run under the same name and the ``.log`` extension (see :class:`RunLogHandler`), and
+    the captures in ``captures`` inside it. The log tab shows records from INFO up, while the
+    file holds every record that reaches it, DEBUG included.
 
     :param parent: The parent widget.
     """
@@ -148,8 +152,9 @@ class RippleWindow(ManagedWindowBase):
     def queue(self, procedure: RippleProcedure | None = None) -> None:
         """Queue a run of the procedure, pausing through the message panel, for the inputs.
 
-        The procedure moves its captures to ``captures`` in the results directory. An input
-        that is not valid is reported instead of queued.
+        The run gets its own directory inside the results directory, created now and named
+        from the time, where its results file goes and its captures, in ``captures``. An input
+        or a file name that is not valid is reported instead of queued.
 
         :param procedure: The procedure to run; built from the inputs when None.
         """
@@ -160,8 +165,25 @@ class RippleWindow(ManagedWindowBase):
                 self.report_invalid_parameters(str(error))
                 return
         procedure.pause_handler = self.message_widget.prompt
-        procedure.results_directory = Path(self.directory)
-        super().queue(procedure)
+        run_directory = make_run_directory(Path(self.directory))
+        procedure.results_directory = run_directory
+        if self.store_measurement:
+            try:
+                filename = unique_filename(
+                    str(run_directory),
+                    prefix=self.file_input.filename_base,
+                    datetimeformat="",
+                    procedure=procedure,
+                    ext=self.file_input.filename_extension,
+                )
+            except KeyError as error:
+                run_directory.rmdir()  # Still empty, so nothing of the run is left behind.
+                self.report_invalid_parameters(f"The file name is not valid: {error.args[0]}")
+                return
+        else:
+            # Results reads back a file that exists, so the file must not be created yet.
+            filename = str(Path(tempfile.mkdtemp(prefix="TempFile_")) / "results.csv")
+        self.manager.queue(self.new_experiment(Results(procedure, filename)))
 
     def report_invalid_parameters(self, reason: str) -> None:
         """Tell the user why the inputs do not make a procedure.
