@@ -1,202 +1,205 @@
 """Transient response measurement procedure."""
 
-import csv
 import logging
 import math
-from collections.abc import Iterator
-from itertools import pairwise
-from operator import itemgetter
+import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
-from time import sleep
-from typing import ClassVar, NamedTuple
+from time import perf_counter, sleep
+from typing import Any, ClassVar, NamedTuple, Self
 
+import numpy as np
+from numpy.typing import NDArray
 from pymeasure.experiment import Procedure
 
-from pilgrim.instruments import (
-    TektronixAFG31051,
-    TektronixMSO58,
-    TektronixMSO456Channel,
-    TektronixMSO456Measurement,
-)
+from pilgrim.instruments import TektronixAFG31051, TektronixMSO58, TektronixMSO456Measurement
 
-from .parameters import (
-    FloatListParameter,
-    FloatParameter,
-    FloatRangeListParameter,
-    IntegerParameter,
-    StringParameter,
+from .parameters import BooleanParameter, FloatParameter, IntegerParameter, StringParameter
+from .procedure_ripple import (
+    DEFAULT_RESULTS_DIRECTORY,
+    ScopeEvent,
+    capture_hyperlink,
+    format_with_si_prefix,
 )
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
-# How often the scope measurement populations are polled while waiting for them to fill.
+# How often the scope measurement populations are polled while waiting for them to fill, and how
+# often a paused procedure checks whether it was asked to stop.
 POLL_INTERVAL = 0.1
-# The width of the scope screen in divisions, fixed by the MSO 4/5/6 series.
-HORIZONTAL_DIVISIONS = 10
-# The directory on the scope's file system a capture is saved to before it is read.
-SCOPE_CAPTURE_DIRECTORY = "C:/pilgrim"
+# How long the populations still short of the minimum may stay unchanged, in seconds, before a
+# warning names them; a measurement that collects no values would otherwise hold the acquisition
+# silently.
+STALL_WARNING_INTERVAL = 10.0
+# The VISA timeout of the scope in ms; the scope can take seconds to answer while it applies a
+# setting or saves a capture, longer than the VISA default.
+SCOPE_TIMEOUT = 10_000
+#: The prompt of a pause the user asked for through :meth:`TransientProcedure.request_pause`.
+PAUSE_PROMPT = "Paused as requested."
 
-# The conditions recorded with every row, ahead of the scope measurements.
-LOAD_LOW_COLUMN = "Load low (V)"
-LOAD_HIGH_COLUMN = "Load high (V)"
-FREQUENCY_COLUMN = "Frequency (Hz)"
-DUTY_COLUMN = "Duty (%)"
-CONDITION_COLUMNS = [LOAD_LOW_COLUMN, LOAD_HIGH_COLUMN, FREQUENCY_COLUMN, DUTY_COLUMN]
-# The columns only the results have: which extreme a row holds and the path of its capture.
-EXTREME_COLUMN = "Extreme"
+VIN_COLUMN = "Vin (V)"
+LOAD_STEP_COLUMN = "Load Step"
+FREQUENCY_COLUMN = "Frequency (kHz)"
+VMEAN_COLUMN = "Mean Vmean (mV)"
+VMAX_COLUMN = "Max Vmax (mV)"
+VMIN_COLUMN = "Min Vmin (mV)"
+PK2PK_COLUMN = "Mean Vpk2pk (mV)"
+OVERSHOOT_COLUMN = "Overshoot (%)"
+UNDERSHOOT_COLUMN = "Undershoot (%)"
+RISE_TIME_COLUMN = "Mean Rise Time (us)"
+FALL_TIME_COLUMN = "Mean Fall Time (us)"
 CAPTURE_COLUMN = "Capture"
+#: The decimal places the results read from the scope and derived from them are rounded to.
+RESULT_DECIMALS = 3
+#: The signals the scope measures; the channel of each is a parameter of the procedure.
+VOUT = "Vout"
+IOUT = "Iout"
 
 
-class Signal(NamedTuple):
-    """One signal the scope shows and measures."""
+class Result(NamedTuple):
+    """A results column and the scope measurement statistic recorded in it."""
 
-    #: The name of the signal in the data columns, e.g. ``"Vout"``.
-    name: str
-    #: The scope channel the signal is on, e.g. ``"CH1"``.
-    source: str
-
-
-class ScopeMeasurement(NamedTuple):
-    """One measurement the scope takes during the sweeps."""
-
-    #: The signal measured.
-    signal: Signal
-    #: The measurement type, e.g. ``"RISETIME"``.
-    measurement_type: str
-    #: The units of the measurement's values, e.g. ``"s"``.
-    units: str
-
-    def column(self, statistic: str) -> str:
-        """Return the data column name of one statistic of this measurement.
-
-        :param statistic: The statistic, a measurement property name such as
-            ``"standard_deviation"``.
-        :returns: The column name, e.g. ``"Iout RISETIME standard deviation (s)"``; the
-            population, a count, carries no units.
-        """
-        name = f"{self.signal.name} {self.measurement_type} {statistic.replace('_', ' ')}"
-        return name if statistic == "population" else f"{name} ({self.units})"
-
-
-class Extreme(NamedTuple):
-    """One row reported after the sweeps: the row holding an extreme of one data column."""
-
-    #: The label of the row, e.g. ``"Highest Vmax"``.
-    label: str
-    #: The data column searched.
+    #: The column of :attr:`TransientProcedure.DATA_COLUMNS`.
     column: str
-    #: Whether the highest value of the column is sought (otherwise the lowest).
-    highest: bool
+    #: The signal the measurement is taken on, :data:`VOUT` or :data:`IOUT`.
+    signal: str
+    #: The type of the measurement the statistic comes from.
+    measurement_type: str
+    #: The statistic of that measurement over all acquisitions, as the measurement interface
+    #: names it.
+    statistic: str
+    #: The factor from the volts or seconds the scope reads to the unit of the column.
+    scale: float
 
 
-def _measurement_columns(measurements: list[ScopeMeasurement], statistics: list[str]) -> list[str]:
-    """Return the data columns of every statistic of every scope measurement, in order.
+#: The results read from the scope at every input; the overshoot and undershoot columns are
+#: computed from them.
+RESULTS = [
+    Result(VMEAN_COLUMN, VOUT, "MEAN", "mean", 1e3),
+    Result(VMAX_COLUMN, VOUT, "MAXIMUM", "maximum", 1e3),
+    Result(VMIN_COLUMN, VOUT, "MINIMUM", "minimum", 1e3),
+    Result(PK2PK_COLUMN, VOUT, "PK2PK", "mean", 1e3),
+    Result(RISE_TIME_COLUMN, IOUT, "RISETIME", "mean", 1e6),
+    Result(FALL_TIME_COLUMN, IOUT, "FALLTIME", "mean", 1e6),
+]
+#: The ``(signal, measurement type)`` pairs the scope must measure; startup adds the missing ones.
+REQUIRED_MEASUREMENTS = list(dict.fromkeys((r.signal, r.measurement_type) for r in RESULTS))
 
-    :param measurements: The scope measurements.
-    :param statistics: The statistics read from every measurement.
-    :returns: The column names.
+
+class Input(NamedTuple):
+    """One input of the measurement, a row of :attr:`TransientProcedure.INPUTS`."""
+
+    #: The pulse frequency in kHz.
+    frequency: float
+    #: The high level of the pulse in mV.
+    high: float
+    #: The low level of the pulse in mV.
+    low: float
+    #: The leading edge time of the pulse in us.
+    leading: float
+    #: The trailing edge time of the pulse in us.
+    trailing: float
+    #: The horizontal scale of the scope in us per division.
+    horizontal_div: float
+    #: The horizontal position of the trigger point in percent of the screen width.
+    horizontal_position: float
+    #: Whether the scope triggers on the falling edge of Vout, at the low cursor level, rather
+    #: than on the rising edge of Iout.
+    falling_edge: bool
+
+    @classmethod
+    def from_row(cls, row: NDArray[np.float64]) -> Self:
+        """Return the input a row of :attr:`TransientProcedure.INPUTS` holds.
+
+        :param row: One value per field, in field order; the last is 0 for a rising edge on
+            Iout and 1 for a falling edge on Vout.
+        :returns: The input.
+        :raises ValueError: If the row does not hold one value per field.
+        """
+        if len(row) != len(cls._fields):
+            raise ValueError(
+                f"An input needs {len(cls._fields)} values, not {len(row)}: {row.tolist()}."
+            )
+        frequency, high, low, leading, trailing, div, position, edge = (float(v) for v in row)
+        return cls(frequency, high, low, leading, trailing, div, position, bool(edge))
+
+    @property
+    def load_step(self) -> str:
+        """Get the load step as the pulse levels, e.g. ``"85 to 148 mV"``."""
+        return f"{self.low:g} to {self.high:g} mV"
+
+    @property
+    def frequency_text(self) -> str:
+        """Get the pulse frequency with an SI prefix, e.g. ``"1kHz"``."""
+        return format_with_si_prefix(self.frequency * 1e3, "Hz")
+
+    def describe(self) -> str:
+        """Return the load step and frequency for a log or a prompt.
+
+        :returns: The description, e.g. ``"85 to 148 mV at 1kHz"``.
+        """
+        return f"{self.load_step} at {self.frequency_text}"
+
+
+def overshoot_percent(maximum: float, mean: float) -> float:
+    """Return how far a rail rises above its mean, as a percentage of the mean's magnitude.
+
+    A maximum of 5.5 V on a mean of 5 V gives 10 %, as does a maximum of -4.5 V on a mean of
+    -5 V, so the percentage is positive whenever the maximum lies above the mean.
+
+    :param maximum: The highest voltage in volts.
+    :param mean: The mean voltage in volts.
+    :returns: ``(maximum - mean) / abs(mean) * 100``, NaN when the mean is zero.
     """
-    return [m.column(statistic) for m in measurements for statistic in statistics]
+    if mean == 0:
+        return math.nan
+    return (maximum - mean) / abs(mean) * 100
 
 
-def _number(value: object, name: str) -> float:
-    """Return a value read from an instrument as a float.
+def undershoot_percent(minimum: float, mean: float) -> float:
+    """Return how far a rail dips below its mean, as a percentage of the mean's magnitude.
 
-    :param value: The value read.
-    :param name: What the value is, for the error message.
-    :returns: The value.
-    :raises TypeError: If the driver returns anything but a number.
+    A minimum of 4 V on a mean of 5 V gives 20 %, as does a minimum of -6 V on a mean of -5 V,
+    so the percentage is positive whenever the minimum lies below the mean.
+
+    :param minimum: The lowest voltage in volts.
+    :param mean: The mean voltage in volts.
+    :returns: ``(mean - minimum) / abs(mean) * 100``, NaN when the mean is zero.
     """
-    if not isinstance(value, int | float):
-        raise TypeError(f"{name} must be a number, not {value!r}.")
-    return float(value)
-
-
-def _population(measurement: TektronixMSO456Measurement) -> int:
-    """Return the population of a scope measurement.
-
-    :param measurement: The measurement.
-    :returns: The number of values its statistics hold.
-    :raises TypeError: If the driver returns anything but an int.
-    """
-    population: object = measurement.population
-    if not isinstance(population, int):
-        raise TypeError(f"Population must be an int, not {population!r}.")
-    return population
+    if mean == 0:
+        return math.nan
+    return (mean - minimum) / abs(mean) * 100
 
 
 class TransientProcedure(Procedure):
-    """Measure the transient response of an output voltage to load steps pulsed by an AFG.
+    """Measure the transient response of a rail: an AFG31051 function generator steps the load
+    with a pulse, and an MSO58 oscilloscope measures the output voltage, Vout, and the load
+    current, Iout, at every input of :attr:`INPUTS`.
 
-    The AFG drives the load with a pulse whose levels, frequency, duty cycle and edge times are
-    parameters. The load is stepped through each load range, and at every step the pulse
-    frequency is swept through the checkpoints. After every frequency change, the pulse edges
-    the AFG may have moved are set back to equal times.
-    The scope shows the output voltage on CH1 and the output current on CH2 with infinite
-    persistence, triggers on CH2 at the midpoint of the current step, and scales its horizontal
-    axis to the pulse frequency so that the chosen number of cycles fills the screen. It
-    measures the output voltage's mean, maximum, minimum and peak-to-peak, and the output
-    current's top, mean, rise time and fall time.
-    At every frequency, the measurement statistics restart and are recorded once each
-    measurement has collected the minimum population, together with the load, frequency and
-    duty cycle, into a raw data file in the capture directory. After the sweeps, the rows with
-    the highest maximum, lowest minimum and highest peak-to-peak output voltage are the
-    results: their conditions are reproduced, a scope capture of each is saved to the capture
-    directory, and its path is recorded with the row.
+    Startup stops the scope, makes sure it measures the mean, maximum, minimum and peak-to-peak
+    of ``vout_channel`` and the rise and fall times of ``iout_channel``, adding the measurements
+    it lacks to those already set up, e.g. from the front panel, see
+    :meth:`add_missing_measurements`, and, when ``use_cursor`` is set, shows the horizontal bar
+    cursors on ``vout_channel`` at ``cursor_lo_abs`` and ``cursor_hi_abs`` volts, see
+    :meth:`show_cursors`; otherwise it hides them. The AFG is set to a pulse with its output
+    off, see :meth:`set_up_afg`.
+
+    Execute goes through :attr:`INPUTS` in order, see :meth:`execute`. With ``safe_mode`` set,
+    the procedure stops the acquisition and pauses once the instruments are set for an input,
+    so the user can adjust the scope before the acquisition starts: it hands a prompt to
+    :attr:`pause_handler` and waits until :meth:`resume` is called, or until it is asked to
+    stop. By default the prompt is printed and Enter resumes, as on a command line; a GUI
+    replaces the handler with one that shows the prompt and resumes from a button. The user can
+    also ask for a pause at any time through :meth:`request_pause`, which the procedure honours
+    at its next step with the prompt ``PAUSE_PROMPT``.
     """
 
-    # The scope setup is fixed rather than parameters, since it defines the data columns, which
-    # PyMeasure needs before a run.
-    #: The output voltage, whose extremes are the results.
-    VOUT: ClassVar[Signal] = Signal("Vout", "CH1")
-    #: The output current, whose step the scope triggers on.
-    IOUT: ClassVar[Signal] = Signal("Iout", "CH2")
-    #: The measurements the scope takes, numbered from 1 in this order.
-    SCOPE_MEASUREMENTS: ClassVar[list[ScopeMeasurement]] = [
-        ScopeMeasurement(VOUT, "MEAN", "V"),
-        ScopeMeasurement(VOUT, "MAXIMUM", "V"),
-        ScopeMeasurement(VOUT, "MINIMUM", "V"),
-        ScopeMeasurement(VOUT, "PK2PK", "V"),
-        ScopeMeasurement(IOUT, "TOP", "V"),
-        ScopeMeasurement(IOUT, "MEAN", "V"),
-        ScopeMeasurement(IOUT, "RISETIME", "s"),
-        ScopeMeasurement(IOUT, "FALLTIME", "s"),
-    ]
-    #: The statistics recorded from every measurement, as measurement property names.
-    STATISTICS: ClassVar[list[str]] = [
-        "mean",
-        "minimum",
-        "maximum",
-        "standard_deviation",
-        "population",
-    ]
-    #: The rows reported after the sweeps, each the row holding one extreme of the output
-    #: voltage.
-    EXTREMES: ClassVar[list[Extreme]] = [
-        Extreme(
-            "Highest Vmax",
-            ScopeMeasurement(VOUT, "MAXIMUM", "V").column("maximum"),
-            highest=True,
-        ),
-        Extreme(
-            "Lowest Vmin",
-            ScopeMeasurement(VOUT, "MINIMUM", "V").column("minimum"),
-            highest=False,
-        ),
-        Extreme(
-            "Highest peak-to-peak",
-            ScopeMeasurement(VOUT, "PK2PK", "V").column("maximum"),
-            highest=True,
-        ),
-    ]
-
-    # The defaults are the bench instruments, so the procedure runs against them unless told
-    # otherwise.
     name = StringParameter(
         "Procedure name",
         default="transient",
-        description="Prefix of every output file name, also recorded with the results",
+        description="Name of the run, recorded with the results",
     )
     afg_resource = StringParameter(
         "AFG resource",
@@ -208,124 +211,245 @@ class TransientProcedure(Procedure):
         default="",
         description="VISA resource name of the oscilloscope",
     )
-    capture_dest = StringParameter(
-        "Capture destination",
-        default="./results/captures",
-        description="Directory the raw data file and the scope captures are saved to",
-    )
-
-    frequency = FloatParameter(
-        "Pulse frequency",
-        units="Hz",
-        default=1e3,
-        minimum=1e-3,
-        maximum=1e6,
-        description="Pulse frequency while the instruments are set up, before the sweeps",
-    )
-    dutycycle = FloatParameter("Duty cycle", units="%", default=50.0, minimum=0.001, maximum=99.999)
-    high_level = FloatParameter("High level", units="V", default=0.5)
-    low_level = FloatParameter("Low level", units="V", default=0.0)
-    leading_edge = FloatParameter("Leading edge", units="us", default=1, minimum=1)
-    trailing_edge = FloatParameter("Trailing edge", units="us", default=1, minimum=1)
-    afg_delay = FloatParameter(
-        "AFG delay",
-        units="s",
-        default=3.0,
-        minimum=0.0,
-        description="Time for the output to settle after it turns on, before the scope trigger "
-        "level is taken from it",
-    )
-
-    checkpoints = FloatListParameter(
-        "Checkpoint frequencies",
-        units="Hz",
-        default=[],
-        description="Frequencies the sweep passes through, in order",
-    )
-    sweep_ratio = FloatParameter(
-        "Sweep ratio",
-        default=0.01,
-        minimum=0.0001,
-        maximum=1.0,
-        description="Fraction of the range between neighbouring checkpoints to step by",
-    )
-    load_ranges = FloatRangeListParameter(
-        "Load steps",
-        minimum=0.0,
-        maximum=1.0,
-        default=[],
-        description="Ranges from 0 (low level) to 1 (high level) to step the load between",
-    )
-    soak = FloatParameter(
-        "Soak time",
-        units="s",
-        default=0.0,
-        minimum=0.0,
-        description="Settling time after every load and frequency change",
-    )
-
-    cycles_on_screen = IntegerParameter(
-        "Cycles on screen",
+    vin = FloatParameter("Vin", units="V", default=0, description="Nominal input voltage")
+    vout_channel = IntegerParameter(
+        "Vout channel",
         default=1,
         minimum=1,
-        description="Pulse cycles the scope's horizontal scale fits on the screen",
+        maximum=8,
+        description="Scope channel of the output voltage",
+    )
+    iout_channel = IntegerParameter(
+        "Iout channel",
+        default=2,
+        minimum=1,
+        maximum=8,
+        description="Scope channel of the load current",
+    )
+    safe_mode = BooleanParameter(
+        "Run in safe mode",
+        default=True,
+        description="Procedure stops after each input change for you to verify scope readings",
+    )
+    use_cursor = BooleanParameter(
+        "Use cursors",
+        default=True,
+        description="Show the cursors about the target on the scope, or hide them",
+    )
+    cursor_hi_abs = FloatParameter(
+        "Absolute cursor high",
+        units="V",
+        default=0,
+        description="High cursor level given as a voltage",
+    )
+    cursor_lo_abs = FloatParameter(
+        "Absolute cursor low",
+        units="V",
+        default=0,
+        description="Low cursor level given as a voltage",
+    )
+    iout_trigger_level = FloatParameter(
+        "Iout trigger level",
+        units="mV",
+        default=144,
+        description="Trigger level on the Iout channel, for the inputs that trigger on it",
     )
     pop_min = IntegerParameter(
-        "Minimum population",
+        "Sample population minimum",
         default=300,
-        minimum=1,
-        description="Values every scope measurement collects before a row is recorded",
+        minimum=0,
+        description="Takes captures until at least the population minimum",
+    )
+    scope_capture_dir = StringParameter(
+        "Scope capture directory",
+        default="C:/Temp/Transient/",
+        description="Directory on the scope the captures are saved to before they are moved",
     )
 
-    #: The columns of the raw data file, which holds every row measured in the sweeps.
-    RAW_COLUMNS: ClassVar[list[str]] = [
-        *CONDITION_COLUMNS,
-        *_measurement_columns(SCOPE_MEASUREMENTS, STATISTICS),
+    DATA_COLUMNS: ClassVar[list[str]] = [
+        VIN_COLUMN,
+        LOAD_STEP_COLUMN,
+        FREQUENCY_COLUMN,
+        VMEAN_COLUMN,
+        VMAX_COLUMN,
+        VMIN_COLUMN,
+        PK2PK_COLUMN,
+        OVERSHOOT_COLUMN,
+        UNDERSHOOT_COLUMN,
+        RISE_TIME_COLUMN,
+        FALL_TIME_COLUMN,
+        CAPTURE_COLUMN,
     ]
-    #: The columns of the results, one row per extreme in :attr:`EXTREMES`.
-    DATA_COLUMNS: ClassVar[list[str]] = [EXTREME_COLUMN, *RAW_COLUMNS, CAPTURE_COLUMN]
+
+    INPUTS: ClassVar[NDArray[np.float64]] = np.array(
+        [
+            # (freq kHz, high mV, low mV, leading us, trailing us, hdiv us, hpos %, edge)
+            # edge is a bool: 0 for rising edge, 1 for falling edge
+            # edge also doubles as a decision for 1: Vout channel param or 0: Iout channel param
+            # specifically, for 1 kHz inputs, the trigger is set to the Vout channel and falling
+            [1, 148, 85, 2.580, 2.380, 100, 30, 1],  # 50-100 load @ 1 kHz
+            [100, 149, 84, 2.580, 2.380, 4, 50, 0],  # 50-100 load @ 100 kHz
+            [500, 150, 80, 0.400, 0.400, 1, 50, 0],  # 50-100 load @ 500 kHz
+            [1000, 159, 69, 0.200, 0.200, 0.4, 50, 0],  # 50-100 load @ 1 MHz
+            [1, 113, 49, 2.580, 2.180, 100, 30, 1],  # 25-75 load @ 1 kHz
+            [100, 113, 49, 2.380, 2.180, 4, 50, 0],  # 25-75 load @ 100 kHz
+            [500, 120, 39, 0.400, 0.400, 1, 50, 0],  # 25-75 load @ 500 kHz
+            [1000, 134, 21, 0.200, 0.200, 0.4, 50, 0],  # 25-75 load @ 1 MHz
+            [1, 76, 11, 2.680, 1.280, 100, 30, 1],  # 0-50 load @ 1 kHz
+            [100, 77, 5, 2.880, 1.780, 4, 50, 0],  # 0-50 load @ 100 kHz
+            [500, 97, -17, 0.400, 0.400, 1, 50, 0],  # 0-50 load @ 500 kHz
+            [1000, 132, -52, 0.200, 0.200, 0.4, 50, 0],  # 0-50 load @ 1 MHz
+            [1, 150, 9, 6.760, 5.260, 100, 30, 1],  # 0-100 @ 1 kHz
+            [100, 151, 0, 3.290, 2.290, 4, 50, 0],  # 0-100 @ 100 kHz
+            [500, 166, -34, 0.400, 0.400, 1, 50, 0],  # 0-100 @ 500 kHz
+            [1000, 208, -85, 0.200, 0.200, 0.4, 50, 0],  # 0-100 load @ 1 MHz
+        ]
+    )
 
     afg: TektronixAFG31051
     scope: TektronixMSO58
-    #: The rows measured so far in the sweeps, as written to the raw data file.
-    rows: list[dict[str, float]]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._resumed = threading.Event()
+        self._pause_requested = threading.Event()
+        #: Receives the prompt each time the procedure pauses; see :meth:`pause`.
+        self.pause_handler: Callable[[str], None] = self.prompt_on_console
+        #: The directory on this computer the results file of the run goes to; the captures are
+        #: moved to :attr:`capture_directory` inside it. The runner sets it, as a window does to
+        #: the directory it creates when it queues a run.
+        self.results_directory: Path = Path(DEFAULT_RESULTS_DIRECTORY)
+
+    @property
+    def capture_directory(self) -> Path:
+        """Get the directory on this computer the captures are moved to.
+
+        It is ``captures`` inside :attr:`results_directory`, so the captures sit next to the
+        results file and the log of the run.
+        """
+        return self.results_directory / "captures"
+
+    def inputs(self) -> list[Input]:
+        """Return the inputs of the measurement, in the order of :attr:`INPUTS`.
+
+        :returns: The inputs.
+        :raises ValueError: If a row of :attr:`INPUTS` does not hold one value per field of
+            :class:`Input`.
+        """
+        return [Input.from_row(row) for row in self.INPUTS]
 
     def startup(self) -> None:
-        """Connect to the scope and the AFG, configure them, and turn the stimulus on."""
-        self.capture_directory.mkdir(parents=True, exist_ok=True)
-        log.info("Setting up instruments.")
-        self._set_up_scope()
-        self._fit_scope_to_frequency(self.frequency)
-        self._set_up_afg()
-        # The midpoint comes from the current step, which only exists once the AFG output is on.
-        self._set_scope_trigger_level()
+        """Connect to the scope and the AFG and set them up for the inputs.
+
+        The scope's acquisition is stopped, the measurements it lacks are added, see
+        :meth:`add_missing_measurements`, and the cursors are shown on ``vout_channel`` when
+        ``use_cursor`` is set, see :meth:`show_cursors`, or hidden otherwise, so a capture
+        shows none left from an earlier run. The AFG is set to a pulse with its output off,
+        see :meth:`set_up_afg`.
+
+        :raises ValueError: If ``use_cursor`` is set and a cursor level lies outside the
+            voltages the scope shows of ``vout_channel``.
+        """
+        log.info("Connecting to the scope.")
+        self.scope = TektronixMSO58(self.scope_resource, timeout=SCOPE_TIMEOUT)
+        state = "acquiring" if self.scope.acquisition_enabled else "stopped"
+        log.info(f"Connected to {self.scope.id}, found {state}.")
+        self.scope.acquisition_enabled = False
+        self.add_missing_measurements()
+        if self.use_cursor:
+            self.show_cursors()
+        else:
+            self.hide_cursors()
+        log.info("Connecting to the AFG.")
+        self.afg = TektronixAFG31051(self.afg_resource)
+        log.info(f"Connected to {self.afg.id}.")
+        self.set_up_afg()
 
     def execute(self) -> None:
-        """Run the sweeps, save every row to the raw data file, then record the worst cases.
+        """Measure at every input of :attr:`INPUTS` until each scope measurement has ``pop_min``
+        values.
 
-        The raw data file, ``<name>_raw_data.csv`` in the capture directory, receives every
-        row as it is measured. The results hold one row per extreme in :attr:`EXTREMES`, taken
-        from the raw data, with the path of a scope capture of its conditions, saved next to
-        the raw data file as ``<name>_<load>_<duty>_<frequency>_<extreme>.png``. Stops without
-        recording the worst cases when asked to.
+        Each input sets the AFG pulse, see :meth:`set_afg`, and the scope's horizontal scale,
+        position and trigger, see :meth:`set_scope`. With ``safe_mode`` set, the procedure then
+        stops the acquisition and pauses for the user to adjust the scope, see :meth:`pause`.
+        It then clears the statistics, acquires until the measurements are populated, stops,
+        saves a screen capture to :attr:`capture_directory` and records one row of
+        :attr:`DATA_COLUMNS`. Stops early when asked to.
+
+        :raises ValueError: If the scope lacks a required measurement of ``vout_channel`` or
+            ``iout_channel``, or a capture could not be saved.
         """
-        self.rows = []
-        raw_path = self.capture_directory / f"{self.name}_raw_data.csv"
-        with raw_path.open("w", newline="", encoding="utf-8") as raw_file:
-            writer = csv.DictWriter(raw_file, fieldnames=self.RAW_COLUMNS)
-            writer.writeheader()
-            for row in self._sweep():
-                self.rows.append(row)
-                writer.writerow(row)
-                raw_file.flush()  # Keeps the rows measured so far if the run dies.
-        log.info(f"Raw data saved to {raw_path}.")
-        if self.should_stop():
-            log.info("Transient measurement stopped before the worst cases were recorded.")
-            return
-        self._record_extremes()
+        measurements = self._attach_measurements()
+        if not measurements:
+            raise ValueError("The scope has no measurements; add at least one on the scope.")
+        for measurement in measurements:
+            _log_measurement(measurement, self.pop_min)
+        recorded = {
+            result.column: self._measurement_of(
+                measurements, result.signal, result.measurement_type
+            )
+            for result in RESULTS
+        }
+        numbers = [_measurement_number(measurement) for measurement in measurements]
+        scope_directory = self._make_scope_capture_dir()
+        local_directory = self.capture_directory
+        local_directory.mkdir(parents=True, exist_ok=True)
+        inputs = self.inputs()
+        log.info(f"Starting transient measurement over {len(inputs)} inputs.")
+        for done, current in enumerate(inputs, start=1):
+            if not self._pause_if_requested():
+                log.info("Transient measurement stopped.")
+                return
+            log.info(f"Input {done} of {len(inputs)}: {current.describe()}.")
+            self.set_afg(current)
+            self.set_scope(current)
+            if self.safe_mode:
+                # The acquisition stays stopped while the user adjusts the scope, so nothing
+                # taken with the settings in flux reaches the statistics.
+                self.scope.acquisition_enabled = False
+                prompt = (
+                    f"Input {done} of {len(inputs)} set: {current.describe()}. Adjust the "
+                    "scope if required."
+                )
+                if not self.pause(prompt):
+                    log.info("Transient measurement stopped.")
+                    return
+            # Starting acquisition carries the statistics on, so they are cleared first.
+            self.scope.clear_acquisitions()
+            _ = self.scope.complete  # The scope clears in the background.
+            self.scope.acquisition_enabled = True
+            filled = self._wait_for_population(numbers)
+            self.scope.acquisition_enabled = False
+            if not filled:
+                log.info("Transient measurement stopped.")
+                return
+            _ = self.scope.complete  # Lets the stop take effect before the results are read.
+            # Acquisitions in flight when the populations filled still add values, so the
+            # populations the results come from are read once acquisition has stopped.
+            populations = self.scope.read_populations(numbers)
+            log.info(f"Acquisition stopped at {_format_populations(populations)}.")
+            results = self._read_results(recorded, populations)
+            file_name = self.capture_file_name(current)
+            scope_path = f"{scope_directory}/{file_name}"
+            self._save_capture(scope_path)
+            local_path = local_directory / file_name
+            self._cut_capture(scope_path, local_path)
+            self.emit(
+                "results",
+                {
+                    VIN_COLUMN: self.vin,
+                    LOAD_STEP_COLUMN: current.load_step,
+                    FREQUENCY_COLUMN: current.frequency,
+                    **results,
+                    CAPTURE_COLUMN: capture_hyperlink(
+                        local_path.relative_to(self.results_directory)
+                    ),
+                },
+            )
+            self.emit("progress", 100 * done / len(inputs))
 
     def shutdown(self) -> None:
-        """Turn off the stimulus and leave the instruments in a safe state."""
+        """Turn the AFG output off and close the connections to the AFG and the scope."""
         # Startup can fail before either instrument is connected, leaving its attribute unset.
         if getattr(self, "afg", None) is not None:
             self.afg.ch1.output_enabled = False
@@ -334,328 +458,457 @@ class TransientProcedure(Procedure):
             self.scope.adapter.close()
         log.info("Ending transient measurement.")
 
-    @property
-    def capture_directory(self) -> Path:
-        """Get the host directory the raw data file and the scope captures are saved to."""
-        return Path(self.capture_dest)
+    def pause(self, prompt: str) -> bool:
+        """Pause until :meth:`resume` is called, or the procedure is asked to stop.
 
-    def sweep_frequencies(self) -> list[float]:
-        """Return the frequencies in Hz that the sweep steps through.
+        The prompt is logged and passed to :attr:`pause_handler`, which must see to it that
+        :meth:`resume` gets called, e.g. by reading a line from the console or by enabling a
+        button.
 
-        Between neighbouring checkpoints, the sweep steps by the sweep ratio of their difference,
-        so a ratio of 0.01 steps by 9 Hz from 100 Hz to 1 kHz, then by 90 Hz to 10 kHz.
-        When the ratio does not divide 1 evenly, the last step before each checkpoint is shorter.
-
-        :returns: The sweep frequencies in Hz, ending on the last checkpoint, or an empty list
-            without checkpoints.
+        :param prompt: What the user is to do before the procedure continues, e.g.
+            ``"Adjust the scope if required."``.
+        :returns: Whether the procedure was resumed; False when it was asked to stop first.
         """
-        if not self.checkpoints:
-            return []
-        # Without rounding, a ratio of 1 / 49 gives 49.00000000000001 here, and the extra step
-        # would land on the next checkpoint and repeat it.
-        steps = math.ceil(round(1 / self.sweep_ratio, 9))
-        frequencies: list[float] = []
-        for start, stop in pairwise(self.checkpoints):
-            step = (stop - start) * self.sweep_ratio
-            frequencies.extend(start + i * step for i in range(steps))
-        frequencies.append(self.checkpoints[-1])
-        return frequencies
-
-    def calc_load_steps(self) -> list[tuple[float, float]]:
-        """Return the load steps as ranges of voltages in V.
-
-        Each load range fraction is placed between the low level, at 0, and the high level, at 1,
-        so with levels of -250 mV and 250 mV the range (0.25, 0.75) becomes (-125 mV, 125 mV).
-
-        :returns: A ``(low, high)`` voltage pair in V for each load range, in the same order.
-        """
-        low, high = self.low_level, self.high_level
-        # Weighting both levels lands 0 and 1 exactly on them, which low + f * (high - low)
-        # can miss by a rounding error.
-        return [
-            (low * (1 - start) + high * start, low * (1 - stop) + high * stop)
-            for start, stop in self.load_ranges
-        ]
-
-    def horizontal_scale_for(self, frequency: float) -> float:
-        """Return the scope's horizontal scale in s/div that fits the cycles on the screen.
-
-        ``cycles_on_screen`` cycles of ``frequency`` span the :data:`HORIZONTAL_DIVISIONS`
-        divisions of the screen, so 1 kHz gives 100 µs/div for one cycle.
-
-        :param frequency: The pulse frequency in Hz.
-        :returns: The horizontal scale in seconds per division.
-        """
-        return self.cycles_on_screen / (HORIZONTAL_DIVISIONS * frequency)
-
-    @classmethod
-    def find_extremes(cls, rows: list[dict[str, float]]) -> dict[str, dict[str, float]]:
-        """Return the row holding each extreme in :attr:`EXTREMES`, by label.
-
-        A row whose searched value is NaN, which the scope reports for a result it cannot
-        compute, is passed over; a label no row has a value for is left out.
-
-        :param rows: The rows of the raw data.
-        :returns: The rows by extreme label, e.g. ``"Highest Vmax"``.
-        """
-        extremes: dict[str, dict[str, float]] = {}
-        for label, column, highest in cls.EXTREMES:
-            valid = [row for row in rows if not math.isnan(row[column])]
-            if valid:
-                pick = max if highest else min
-                extremes[label] = pick(valid, key=itemgetter(column))
-        return extremes
-
-    def _sweep(self) -> Iterator[dict[str, float]]:
-        """Step the load through each load range and sweep the frequency at every step.
-
-        At every frequency, the scope statistics restart once the stimulus has settled and one
-        row is measured when every measurement has collected ``pop_min`` values.
-
-        :returns: Every row measured, as it is measured. Ends early when asked to stop, which
-            leaves the current frequency unmeasured.
-        """
-        frequencies = self.sweep_frequencies()
-        load_steps = self.calc_load_steps()
-        total = len(load_steps) * len(frequencies)
-        done = 0
-
-        for low, high in load_steps:
-            self._set_load(low, high)
-            for frequency in frequencies:
-                self._set_frequency(frequency)
-                self._restart_statistics()
-                if not self._wait_for_population():
-                    return
-                yield self._read_row(low, high, frequency)
-                done += 1
-                self.emit("progress", 100 * done / total)
-
-    def _record_extremes(self) -> None:
-        """Reproduce each extreme of the rows measured, capture it, and emit it as a result."""
-        for label, row in self.find_extremes(self.rows).items():
-            capture = self.capture_directory / (
-                f"{self.name}_{row[LOAD_LOW_COLUMN]:g}V_{row[LOAD_HIGH_COLUMN]:g}V_"
-                f"{row[DUTY_COLUMN]:g}D_{row[FREQUENCY_COLUMN]:.3e}Hz_"
-                f"{label.lower().replace(' ', '_').replace('-', '_')}.png"
-            )
-            if not self._capture_extreme(row, capture):
-                log.info("Transient measurement stopped before the worst cases were captured.")
-                return
-            log.info(
-                f"{label} at {row[FREQUENCY_COLUMN]} Hz, load {row[LOAD_LOW_COLUMN]} V to "
-                f"{row[LOAD_HIGH_COLUMN]} V, {row[DUTY_COLUMN]} % duty; captured to {capture}."
-            )
-            self.emit("results", {EXTREME_COLUMN: label, **row, CAPTURE_COLUMN: str(capture)})
-
-    def _set_load(self, low: float, high: float) -> None:
-        """Set the AFG levels to the load step and let the load settle for the soak time.
-
-        :param low: The low level in V.
-        :param high: The high level in V.
-        """
-        channel = self.afg.ch1
-        # Either order is safe: the AFG moves the other level along when they would cross.
-        channel.amplitude_low, channel.amplitude_high = low, high
-        # The soak time is an assumed settling time for the load, not a measured one.
-        sleep(self.soak)
-
-    def _set_frequency(self, frequency: float) -> None:
-        """Set the AFG frequency, keep its edges equal, fit the scope to it and soak.
-
-        :param frequency: The pulse frequency in Hz.
-        """
-        self.afg.ch1.frequency = frequency
-        self._balance_afg_edges()
-        self._fit_scope_to_frequency(frequency)
-        sleep(self.soak)
-
-    def _read_row(self, low: float, high: float, frequency: float) -> dict[str, float]:
-        """Read one row of the raw data: the conditions and every measurement statistic.
-
-        :param low: The low level of the load step in V.
-        :param high: The high level of the load step in V.
-        :param frequency: The pulse frequency in Hz.
-        :returns: The row by column name, in :attr:`RAW_COLUMNS` order.
-        """
-        return {
-            LOAD_LOW_COLUMN: low,
-            LOAD_HIGH_COLUMN: high,
-            FREQUENCY_COLUMN: frequency,
-            # Read back, since the AFG may move the duty cycle along with the frequency.
-            DUTY_COLUMN: _number(self.afg.ch1.pulse_dutycycle, "Duty cycle"),
-            **self._read_measurements(),
-        }
-
-    def _capture_extreme(self, row: dict[str, float], path: Path) -> bool:
-        """Reproduce the conditions of ``row`` and save a scope capture of them to ``path``.
-
-        The persistence is reset so that the capture shows these conditions only, and the
-        capture is taken once every measurement has collected ``pop_min`` values again.
-
-        :param row: A row of the raw data.
-        :param path: The host path of the capture.
-        :returns: Whether the capture was saved; False when asked to stop first.
-        """
-        self._set_load(row[LOAD_LOW_COLUMN], row[LOAD_HIGH_COLUMN])
-        self._set_frequency(row[FREQUENCY_COLUMN])
-        self.scope.reset_persistence()
-        self._restart_statistics()
-        if not self._wait_for_population():
-            return False
-        self._save_capture(path)
+        self._resumed.clear()
+        self._pause_requested.clear()  # Any pause satisfies a request for one.
+        log.info(f"Paused: {prompt}")
+        self.pause_handler(prompt)
+        while not self._resumed.wait(POLL_INTERVAL):
+            if self.should_stop():
+                return False
+        log.info("Resumed.")
         return True
 
-    def _set_up_afg(self) -> None:
-        """Connect to the AFG, configure the pulse, turn the output on and let it settle."""
-        self.afg = TektronixAFG31051(self.afg_resource)
+    def resume(self) -> None:
+        """Let a paused procedure continue; may be called from any thread, e.g. by a GUI."""
+        self._resumed.set()
+
+    def request_pause(self) -> None:
+        """Ask the running procedure to pause at its next step; may be called from any thread.
+
+        The procedure then pauses with ``PAUSE_PROMPT`` as :meth:`pause` does, at the next poll
+        of the populations, stopping the acquisition meanwhile and restarting it on resume, or
+        before the next input. A request made while the procedure is paused is satisfied by
+        that pause.
+        """
+        self._pause_requested.set()
+
+    def _pause_if_requested(self) -> bool:
+        """Pause when a pause was requested, see :meth:`request_pause`.
+
+        :returns: Whether the procedure may go on; False when it was asked to stop while paused.
+        """
+        if not self._pause_requested.is_set():
+            return True
+        return self.pause(PAUSE_PROMPT)
+
+    def prompt_on_console(self, prompt: str) -> None:
+        """Print the prompt on the console and resume the procedure once Enter is pressed.
+
+        The default :attr:`pause_handler`.
+
+        :param prompt: The prompt to print.
+        """
+        input(f"{prompt} Press Enter to continue. ")
+        self.resume()
+
+    def set_up_afg(self) -> None:
+        """Set the AFG to a pulse that holds its duty cycle, with the output off.
+
+        The output stays off until the first input is set, see :meth:`set_afg`, so the load is
+        not driven with the pulse of an earlier run meanwhile. Holding the duty cycle keeps it,
+        rather than the pulse width, as the frequency changes from input to input.
+        """
         channel = self.afg.ch1
-        # The output may still be on from an earlier session; keep it off while the pulse changes.
         channel.output_enabled = False
         channel.shape = "PULS"
-        channel.frequency = self.frequency
-        channel.pulse_dutycycle = self.dutycycle
-        channel.amplitude_high = self.high_level
-        channel.amplitude_low = self.low_level
-        channel.pulse_leading = self.leading_edge
-        channel.pulse_trailing = self.trailing_edge
-        channel.output_enabled = True
-        sleep(self.afg_delay)
+        channel.pulse_hold = "DUTY"
+        log.info("AFG set to a pulse holding its duty cycle, output off.")
 
-    def _balance_afg_edges(self) -> None:
-        """Set the AFG's leading and trailing edge times to their average when they differ.
+    def set_afg(self, current: Input) -> None:
+        """Set the AFG pulse to an input and turn the output on.
 
-        A change of frequency narrows the range the AFG allows for the edge times, and the AFG
-        moves an edge that falls outside it on its own, which can leave the two edges unequal.
-        The longer edge is shortened first, so that the sum of the two never grows beyond what
-        the AFG allowed.
+        The frequency goes first, since it narrows the range of the edge times and the AFG
+        moves an edge outside it on its own; the levels follow, in either order, since the AFG
+        moves the other level along when they would cross; the edges come last.
+
+        :param current: The input.
+        :raises ValueError: If the AFG rejects a setting, e.g. an edge time too long for the
+            frequency.
         """
         channel = self.afg.ch1
-        leading = _number(channel.pulse_leading, "Leading edge")
-        trailing = _number(channel.pulse_trailing, "Trailing edge")
-        if math.isclose(leading, trailing):
-            return
-        edge = (leading + trailing) / 2
-        if leading > trailing:
-            channel.pulse_leading = edge
-            channel.pulse_trailing = edge
-        else:
-            channel.pulse_trailing = edge
-            channel.pulse_leading = edge
+        channel.frequency = current.frequency * 1e3
+        channel.amplitude_high = current.high / 1e3
+        channel.amplitude_low = current.low / 1e3
+        channel.pulse_leading = current.leading
+        channel.pulse_trailing = current.trailing
+        channel.output_enabled = True
         log.info(
-            f"AFG edges of {leading} us and {trailing} us were unequal; both set to {edge} us."
+            f"AFG pulse set to {current.describe()}, edges {current.leading:g} us and "
+            f"{current.trailing:g} us, output on."
         )
 
-    def _set_up_scope(self) -> None:
-        """Connect to the scope, show the output voltage and current, and add the measurements.
+    def set_scope(self, current: Input) -> None:
+        """Set the scope's horizontal scale and position and its edge trigger to an input.
 
-        Replaces every measurement on the scope, including those added from its front panel,
-        with :attr:`SCOPE_MEASUREMENTS`, triggers on an edge of the output current and turns on
-        infinite persistence.
+        An input with ``falling_edge`` triggers on the falling edge of ``vout_channel`` at the
+        low cursor level, ``cursor_lo_abs``, shown or not; any other input triggers on the
+        rising edge of ``iout_channel`` at ``iout_trigger_level``. The scope rounds the
+        horizontal scale to one of its steps silently, so the scale that applies is logged.
+
+        :param current: The input.
         """
-        self.scope = TektronixMSO58(self.scope_resource)
         scope = self.scope
-        for signal in (self.VOUT, self.IOUT):
-            channel: TektronixMSO456Channel = getattr(scope, signal.source.lower())
-            channel.display_enabled = True
-            channel.global_display_enabled = True
-
-        scope.delete_all_measurements()
-        for number, spec in enumerate(self.SCOPE_MEASUREMENTS, start=1):
-            measurement = scope.add_measurement(number)
-            measurement.type = spec.measurement_type
-            measurement.source = spec.signal.source
-
+        scope.horizontal_scale = current.horizontal_div / 1e6
+        scope.horizontal_position = current.horizontal_position
         scope.trigger_type = "EDGE"
-        scope.trigger_source = self.IOUT.source
-        scope.persistence = "INFPERSIST"
-        try:
-            scope.make_directory(SCOPE_CAPTURE_DIRECTORY)
-        except ValueError as exc:
-            if "257" not in str(exc):  # Anything but a directory that exists already.
-                raise
+        if current.falling_edge:
+            number, slope, level = self.vout_channel, "FALL", self.cursor_lo_abs
+        else:
+            number, slope, level = self.iout_channel, "RISE", self.iout_trigger_level / 1e3
+        scope.trigger_source = f"CH{number}"
+        scope.trigger_slope = slope
+        scope.channels[number].trigger_level = level
+        edge = "falling" if current.falling_edge else "rising"
+        log.info(
+            f"Scope set to {scope.horizontal_scale} s/div at {current.horizontal_position:g} %, "
+            f"triggering on the {edge} edge of CH{number} at {level} V."
+        )
 
-    def _set_scope_trigger_level(self) -> None:
-        """Set the scope trigger level to the midpoint of the current step and restart the display.
+    def add_missing_measurements(self) -> list[TektronixMSO456Measurement]:
+        """Add the measurements in :data:`REQUIRED_MEASUREMENTS` that the scope lacks.
 
-        Call once the AFG output is on, since the midpoint is taken from the signal present.
+        The measurements already on the scope, e.g. from its front panel, are kept, and a type a
+        channel already has is not added again. Each missing one is added under the next number
+        above the highest in use, with its type and source set, and logged.
+
+        :returns: The measurements added, in the order of :data:`REQUIRED_MEASUREMENTS`; empty
+            when the scope has them all.
+        :raises ValueError: If the scope refuses a measurement.
+        """
+        measurements = self._attach_measurements()
+        present = {(measurement.source, measurement.type) for measurement in measurements}
+        missing = [
+            (signal, kind)
+            for signal, kind in REQUIRED_MEASUREMENTS
+            if (self._source_of(signal), kind) not in present
+        ]
+        if not missing:
+            log.info("The scope has every measurement required.")
+            return []
+        number = max((_measurement_number(measurement) for measurement in measurements), default=0)
+        added: list[TektronixMSO456Measurement] = []
+        for signal, kind in missing:
+            source = self._source_of(signal)
+            number += 1
+            measurement = self.scope.add_measurement(number)
+            measurement.type = kind
+            measurement.source = source
+            log.info(f"Added scope measurement MEAS{number}: {kind} of {source} ({signal}).")
+            added.append(measurement)
+        return added
+
+    def show_cursors(self) -> None:
+        """Show the horizontal bar cursors on ``vout_channel`` at ``cursor_lo_abs`` and
+        ``cursor_hi_abs``.
+
+        Cursor A marks the low level and cursor B the high one. The scope shows the cursors, on
+        ``vout_channel``, as soon as the levels are set, and logs them.
+
+        :raises ValueError: If a level lies outside the voltages the scope shows of
+            ``vout_channel``; change the channel's scale, position or offset on the scope first.
+        """
+        channel = self.scope.channels[self.vout_channel]
+        self.scope.cursor.set_levels(channel, self.cursor_lo_abs, self.cursor_hi_abs)
+        log.info(
+            f"Cursors shown on CH{self.vout_channel} at {self.cursor_lo_abs} V and "
+            f"{self.cursor_hi_abs} V."
+        )
+
+    def hide_cursors(self) -> None:
+        """Hide the cursors on the scope, wherever they are, and log it."""
+        self.scope.cursor.enabled = False
+        log.info("Cursors hidden.")
+
+    def capture_file_name(self, current: Input) -> str:
+        """Return the file name of the capture taken at one input.
+
+        :param current: The input.
+        :returns: The file name, e.g. ``"12Vin transient 85to148mV 1kHz.png"``, with ``vin``
+            and the levels written without trailing zeros.
+        """
+        levels = f"{current.low:g}to{current.high:g}mV"
+        return f"{self.vin:g}Vin {self.name} {levels} {current.frequency_text}.png"
+
+    def _source_of(self, signal: str) -> str:
+        """Return the scope channel of a signal, e.g. ``"CH1"`` for :data:`VOUT`."""
+        number = self.vout_channel if signal == VOUT else self.iout_channel
+        return f"CH{number}"
+
+    def _make_scope_capture_dir(self) -> str:
+        """Create ``scope_capture_dir`` on the scope where it does not exist, level by level.
+
+        Each level is checked by making it the scope's working directory, so the working
+        directory is left changed.
+
+        :returns: The directory, without a trailing slash.
+        """
+        directory = self.scope_capture_dir.rstrip("/")
+        path, *levels = directory.split("/")
+        for level in levels:
+            path = f"{path}/{level}"
+            try:
+                self.scope.working_directory = path
+            except ValueError as exc:
+                if not _has_event(exc, ScopeEvent.PATH_NOT_FOUND):
+                    raise
+                log.info(f"Creating {path} on the scope.")
+                self.scope.make_directory(path)
+        return directory
+
+    def _save_capture(self, path: str) -> None:
+        """Save a capture of the scope screen to ``path`` on the scope.
+
+        :param path: The path of the capture on the scope, whose extension selects the format.
+        :raises ValueError: If the scope could not save the capture.
+        """
+        started = perf_counter()
+        self.scope.save_image(path)
+        _ = self.scope.complete  # The scope saves in the background.
+        # A failed save queues its event only once complete, and raises nothing by itself.
+        events = self.scope.check_errors()
+        if any(code == ScopeEvent.SAVE_FAILED for code, _ in events):
+            raise ValueError(f"The scope could not save the capture {path}.")
+        log.info(f"Capture saved to {path} on the scope in {perf_counter() - started:.1f} s.")
+
+    def _cut_capture(self, scope_path: str, local_path: Path) -> None:
+        """Move a capture from the scope to this computer.
+
+        The capture is deleted from the scope only once it has been written here, so a failed
+        transfer leaves it on the scope.
+
+        :param scope_path: The path of the capture on the scope.
+        :param local_path: The path to write the capture to, replacing any file there.
+        """
+        started = perf_counter()
+        capture = self.scope.read_file(scope_path)
+        transfer = perf_counter() - started
+        local_path.write_bytes(capture)
+        self.scope.delete_file(scope_path)
+        # A short transfer is the first sign of a read the scope cut off.
+        log.info(f"Capture moved to {local_path}: {len(capture)} bytes in {transfer:.1f} s.")
+
+    def _measurement_of(
+        self, measurements: list[TektronixMSO456Measurement], signal: str, measurement_type: str
+    ) -> TektronixMSO456Measurement:
+        """Return the first measurement of a signal's channel of a type, e.g. MEAN of Vout.
+
+        :param measurements: The measurements on the scope.
+        :param signal: :data:`VOUT` or :data:`IOUT`.
+        :param measurement_type: The type looked for.
+        :returns: The measurement.
+        :raises ValueError: If no measurement of the channel has the type.
+        """
+        source = self._source_of(signal)
+        for measurement in measurements:
+            if measurement.type == measurement_type and measurement.source == source:
+                return measurement
+        raise ValueError(f"The scope has no {measurement_type} measurement of {source} ({signal}).")
+
+    def _read_results(
+        self, recorded: dict[str, TektronixMSO456Measurement], populations: dict[int, int]
+    ) -> dict[str, float]:
+        """Read the statistics of :data:`RESULTS` from the scope, derive the rest, and log them.
+
+        The overshoot and undershoot are how far Max Vmax rises above and Min Vmin dips below
+        Mean Vmean, as percentages of the mean, see :func:`overshoot_percent` and
+        :func:`undershoot_percent`; they are derived from the values as read, in volts. Every
+        value is then scaled to the unit of its column and rounded to :data:`RESULT_DECIMALS`
+        decimal places.
+
+        :param recorded: The measurements by results column.
+        :param populations: The populations by measurement number the statistics come from.
+        :returns: The values by column.
+        """
+        values: dict[str, float] = {}
+        read: list[str] = []
+        for result in RESULTS:
+            measurement = recorded[result.column]
+            name = f"{result.signal} {result.measurement_type} {result.statistic}"
+            value = _number(getattr(measurement, result.statistic), name)
+            values[result.column] = value
+            population = populations[_measurement_number(measurement)]
+            read.append(f"{name} {value} from {population} values")
+        log.info(f"{', '.join(read)}, over {self.scope.acquisition_count} acquisitions.")
+        overshoot = overshoot_percent(values[VMAX_COLUMN], values[VMEAN_COLUMN])
+        undershoot = undershoot_percent(values[VMIN_COLUMN], values[VMEAN_COLUMN])
+        log.info(f"Overshoot {overshoot} %, undershoot {undershoot} %.")
+        results = {result.column: values[result.column] * result.scale for result in RESULTS}
+        results[OVERSHOOT_COLUMN] = overshoot
+        results[UNDERSHOOT_COLUMN] = undershoot
+        return {column: round(value, RESULT_DECIMALS) for column, value in results.items()}
+
+    def _attach_measurements(self) -> list[TektronixMSO456Measurement]:
+        """Return interfaces to the measurements on the scope, in the order the scope lists them.
+
+        :returns: The measurements.
         """
         scope = self.scope
-        # A previous run leaves acquisition stopped, and the midpoint needs a live signal.
-        scope.acquisition_enabled = True
-        scope.set_trigger_level_to_midpoint()
-        # The scope silently drops set commands sent within about 2 s of SETLevel.
-        _ = scope.complete
-        level = getattr(scope, self.IOUT.source.lower()).trigger_level
-        log.info(f"Scope trigger level on {self.IOUT.source} set to {level} V.")
-        # Untriggered waveforms from before the level was set would otherwise stay in the
-        # infinite persistence and the measurement statistics.
-        scope.reset_persistence()
-        scope.clear_acquisitions()
+        numbers = _measurement_numbers(scope.measurement_names)
+        for number, measurement in list(scope.measurements.items()):
+            # Querying a deleted measurement through its interface would create it again.
+            if number not in numbers:
+                scope.remove_child(measurement)
+        for number in numbers:
+            if number not in scope.measurements:
+                # add_measurement would send MEASUrement:ADDNew, which the scope refuses for a
+                # measurement that exists, so only the interface is added.
+                scope.add_child(
+                    TektronixMSO456Measurement,
+                    number,
+                    collection="measurements",
+                    prefix="meas_",
+                )
+        return [scope.measurements[number] for number in numbers]
 
-    def _fit_scope_to_frequency(self, frequency: float) -> None:
-        """Set the scope's horizontal scale to fit the cycles of ``frequency`` on the screen.
+    def _wait_for_population(self, numbers: list[int]) -> bool:
+        """Wait until every measurement has collected ``pop_min`` values.
 
-        The scope rounds the scale to one of its steps, so the scale that applies is logged.
+        Every poll reads the populations of all the measurements in a single query and logs them
+        at debug level. Once the populations still short of the minimum have not changed for
+        ``STALL_WARNING_INTERVAL`` seconds, a warning names them.
 
-        :param frequency: The pulse frequency in Hz.
-        """
-        self.scope.horizontal_scale = self.horizontal_scale_for(frequency)
-        log.debug(f"Scope horizontal scale set to {self.scope.horizontal_scale} s/div.")
-
-    def _restart_statistics(self) -> None:
-        """Clear the scope's acquisitions and start acquiring, so the statistics start afresh."""
-        # Starting acquisition carries the statistics on, so they are cleared first.
-        self.scope.clear_acquisitions()
-        _ = self.scope.complete  # The scope clears in the background.
-        self.scope.acquisition_enabled = True
-
-    def _wait_for_population(self) -> bool:
-        """Wait until every scope measurement has collected ``pop_min`` values, then stop.
-
-        Acquisition stops once the populations fill or the procedure is asked to stop, so the
-        statistics and the screen hold still while they are read. A per-cycle measurement type
-        adds several values per acquisition, so a population can end above ``pop_min``.
-
+        :param numbers: The numbers of the measurements on the scope.
         :returns: Whether the populations filled; False when the procedure was asked to stop
             first.
         """
-        measurements = list(self.scope.measurements.values())
-        filled = False
+        started = perf_counter()
+        previous_short: dict[int, int] | None = None
+        unchanged_since = started
+        polls = 0
         while not self.should_stop():
-            if all(_population(measurement) >= self.pop_min for measurement in measurements):
-                filled = True
-                break
+            if self._pause_requested.is_set():
+                # The acquisition stops while paused, so the capture shows what the user saw.
+                self.scope.acquisition_enabled = False
+                if not self._pause_if_requested():
+                    return False
+                self.scope.acquisition_enabled = True
+                unchanged_since = perf_counter()  # The pause is no stall.
+            polled = perf_counter()
+            populations = self.scope.read_populations(numbers)
+            now = perf_counter()
+            polls += 1
+            log.debug(
+                f"Poll {polls}: {_format_populations(populations)} (min {self.pop_min}), "
+                f"read in {now - polled:.2f} s."
+            )
+            short = {number: count for number, count in populations.items() if count < self.pop_min}
+            if not short:
+                log.info(
+                    f"Populations filled in {now - started:.1f} s over {polls} polls: "
+                    f"{_format_populations(populations)}."
+                )
+                return True
+            # Only the short measurements count as progress: a filled one keeps growing while a
+            # stuck one holds the acquisition.
+            if short != previous_short:
+                previous_short = short
+                unchanged_since = now
+            elif now - unchanged_since >= STALL_WARNING_INTERVAL:
+                log.warning(
+                    f"Populations short of {self.pop_min} unchanged for "
+                    f"{now - unchanged_since:.0f} s: {_format_populations(short)}; acquisition "
+                    "continues until they fill."
+                )
+                unchanged_since = now
             sleep(POLL_INTERVAL)
-        self.scope.acquisition_enabled = False
-        _ = self.scope.complete  # Lets the stop take effect before the statistics are read.
-        return filled
+        return False
 
-    def _read_measurements(self) -> dict[str, float]:
-        """Read every statistic in :attr:`STATISTICS` of every scope measurement.
 
-        :returns: The values by data column name, in :attr:`RAW_COLUMNS` order.
-        """
-        readings: dict[str, float] = {}
-        for number, spec in enumerate(self.SCOPE_MEASUREMENTS, start=1):
-            measurement = self.scope.measurements[number]
-            for statistic in self.STATISTICS:
-                readings[spec.column(statistic)] = getattr(measurement, statistic)
-        return readings
+def _has_event(exc: ValueError, event: ScopeEvent) -> bool:
+    """Return whether a refusal raised by the scope driver reports ``event``.
 
-    def _save_capture(self, path: Path) -> None:
-        """Save a capture of the scope screen to ``path`` on the host.
+    The driver lists the events of a refusal as ``<code>, <message>``, so the code is matched
+    whole: event 100 does not match a refusal reporting 2100.
 
-        The scope saves the image in :data:`SCOPE_CAPTURE_DIRECTORY` on its own file system,
-        from where it is read and then deleted.
+    :param exc: The error the driver raised.
+    :param event: The event looked for.
+    :returns: Whether the error reports the event.
+    """
+    return re.search(rf"(?<!\d){int(event)}, ", str(exc)) is not None
 
-        :param path: The host path of the capture, whose name selects the image format.
-        :raises ValueError: If the scope could not save the image, detected once the read of
-            the file times out.
-        """
-        scope_path = f"{SCOPE_CAPTURE_DIRECTORY}/{path.name}"
-        self.scope.save_image(scope_path)
-        _ = self.scope.complete  # The scope saves in the background.
-        self.scope.check_errors()  # A failed save queues its error only once complete.
-        path.write_bytes(self.scope.read_file(scope_path))
-        self.scope.delete_file(scope_path)
+
+def _measurement_numbers(names: object) -> list[int]:
+    """Return the numbers of the measurements the scope lists.
+
+    :param names: The measurement names read from the scope, e.g. ``["MEAS1", "MEAS3"]``.
+    :returns: The numbers, e.g. ``[1, 3]``.
+    :raises TypeError: If the driver returns anything but a list.
+    """
+    if not isinstance(names, list):
+        raise TypeError(f"Measurement names must be a list, not {names!r}.")
+    return [int(str(name).removeprefix("MEAS")) for name in names]
+
+
+def _measurement_number(measurement: TektronixMSO456Measurement) -> int:
+    """Return the number of a measurement, e.g. 3 for MEAS3.
+
+    :param measurement: The measurement.
+    :returns: Its number.
+    :raises TypeError: If the measurement's id is not an int.
+    """
+    number = measurement.id
+    if not isinstance(number, int):
+        raise TypeError(f"Measurement id must be an int, not {number!r}.")
+    return number
+
+
+def _number(value: object, name: str) -> float:
+    """Return a value read from the scope as a float.
+
+    :param value: The value read.
+    :param name: What the value is, for the error message.
+    :returns: The value, NaN where the scope has no valid result.
+    :raises TypeError: If the driver returns anything but a number.
+    """
+    if not isinstance(value, int | float):
+        raise TypeError(f"{name} must be a number, not {value!r}.")
+    return float(value)
+
+
+def _format_populations(populations: dict[int, int]) -> str:
+    """Return populations by measurement number for the log, e.g. ``"MEAS1=312, MEAS3=0"``.
+
+    :param populations: The populations by measurement number.
+    :returns: The populations formatted in the order given.
+    """
+    return ", ".join(f"MEAS{number}={count}" for number, count in populations.items())
+
+
+def _log_measurement(measurement: TektronixMSO456Measurement, pop_min: int) -> None:
+    """Log a measurement's number, type, source and population limit.
+
+    A limit enabled below ``pop_min`` is logged as a warning as well, since the population then
+    stops short of the minimum and the acquisition never ends.
+
+    :param measurement: The measurement.
+    :param pop_min: The population minimum the measurement has to reach.
+    :raises TypeError: If the driver returns anything but an int for the limit.
+    """
+    number = _measurement_number(measurement)
+    kind = f"{measurement.type} of {measurement.source}"
+    if measurement.uses_global_population_limit:
+        log.info(f"Scope measurement MEAS{number}: {kind}, global population limit.")
+        return
+    if not measurement.population_limit_enabled:
+        log.info(f"Scope measurement MEAS{number}: {kind}, no population limit.")
+        return
+    limit: object = measurement.population_limit
+    if not isinstance(limit, int):
+        raise TypeError(f"Population limit must be an int, not {limit!r}.")
+    log.info(f"Scope measurement MEAS{number}: {kind}, population limit {limit}.")
+    if limit < pop_min:
+        log.warning(
+            f"MEAS{number} stops at {limit} values, below the minimum of {pop_min}, so its "
+            "population can never fill."
+        )
