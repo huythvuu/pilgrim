@@ -20,7 +20,6 @@ INPUTS = (
     "use_cursor",
     "cursor_hi_abs",
     "cursor_lo_abs",
-    "iout_trigger_level",
     "pop_min",
     "scope_capture_dir",
 )
@@ -55,7 +54,6 @@ class TransientInputsWidget(InputsWidget):
     use_cursor: BooleanInput
     cursor_hi_abs: ScientificInput
     cursor_lo_abs: ScientificInput
-    iout_trigger_level: ScientificInput
     pop_min: IntegerInput
     scope_capture_dir: StringInput
 

@@ -108,12 +108,14 @@ class Input(NamedTuple):
     #: Whether the scope triggers on the falling edge of Vout, at the low cursor level, rather
     #: than on the rising edge of Iout.
     falling_edge: bool
+    #: The trigger level on Iout in mV, for an input that triggers on its rising edge.
+    trigger_level: float
 
     @classmethod
     def from_row(cls, row: NDArray[np.float64]) -> Self:
         """Return the input a row of :attr:`TransientProcedure.INPUTS` holds.
 
-        :param row: One value per field, in field order; the last is 0 for a rising edge on
+        :param row: One value per field, in field order; the edge is 0 for a rising edge on
             Iout and 1 for a falling edge on Vout.
         :returns: The input.
         :raises ValueError: If the row does not hold one value per field.
@@ -122,8 +124,10 @@ class Input(NamedTuple):
             raise ValueError(
                 f"An input needs {len(cls._fields)} values, not {len(row)}: {row.tolist()}."
             )
-        frequency, high, low, leading, trailing, div, position, edge = (float(v) for v in row)
-        return cls(frequency, high, low, leading, trailing, div, position, bool(edge))
+        frequency, high, low, leading, trailing, div, position, edge, level = (
+            float(v) for v in row
+        )
+        return cls(frequency, high, low, leading, trailing, div, position, bool(edge), level)
 
     @property
     def load_step(self) -> str:
@@ -257,12 +261,6 @@ class TransientProcedure(Procedure):
         default=0,
         description="Low cursor level given as a voltage",
     )
-    iout_trigger_level = FloatParameter(
-        "Iout trigger level",
-        units="mV",
-        default=144,
-        description="Trigger level on the Iout channel, for the inputs that trigger on it",
-    )
     pop_min = IntegerParameter(
         "Sample population minimum",
         default=300,
@@ -292,26 +290,26 @@ class TransientProcedure(Procedure):
 
     INPUTS: ClassVar[NDArray[np.float64]] = np.array(
         [
-            # (freq kHz, high mV, low mV, leading us, trailing us, hdiv us, hpos %, edge)
+            # (freq kHz, high mV, low mV, leading us, trailing us, hdiv us, hpos %, edge, tlevel mV)
             # edge is a bool: 0 for rising edge, 1 for falling edge
             # edge also doubles as a decision for 1: Vout channel param or 0: Iout channel param
             # specifically, for 1 kHz inputs, the trigger is set to the Vout channel and falling
-            [1, 148, 85, 2.580, 2.380, 100, 30, 1],  # 50-100 load @ 1 kHz
-            [100, 149, 84, 2.580, 2.380, 4, 50, 0],  # 50-100 load @ 100 kHz
-            [500, 150, 80, 0.400, 0.400, 1, 50, 0],  # 50-100 load @ 500 kHz
-            [1000, 159, 69, 0.200, 0.200, 0.4, 50, 0],  # 50-100 load @ 1 MHz
-            [1, 113, 49, 2.580, 2.180, 100, 30, 1],  # 25-75 load @ 1 kHz
-            [100, 113, 49, 2.380, 2.180, 4, 50, 0],  # 25-75 load @ 100 kHz
-            [500, 120, 39, 0.400, 0.400, 1, 50, 0],  # 25-75 load @ 500 kHz
-            [1000, 134, 21, 0.200, 0.200, 0.4, 50, 0],  # 25-75 load @ 1 MHz
-            [1, 76, 11, 2.680, 1.280, 100, 30, 1],  # 0-50 load @ 1 kHz
-            [100, 77, 5, 2.880, 1.780, 4, 50, 0],  # 0-50 load @ 100 kHz
-            [500, 97, -17, 0.400, 0.400, 1, 50, 0],  # 0-50 load @ 500 kHz
-            [1000, 132, -52, 0.200, 0.200, 0.4, 50, 0],  # 0-50 load @ 1 MHz
-            [1, 150, 9, 6.760, 5.260, 100, 30, 1],  # 0-100 @ 1 kHz
-            [100, 151, 0, 3.290, 2.290, 4, 50, 0],  # 0-100 @ 100 kHz
-            [500, 166, -34, 0.400, 0.400, 1, 50, 0],  # 0-100 @ 500 kHz
-            [1000, 208, -85, 0.200, 0.200, 0.4, 50, 0],  # 0-100 load @ 1 MHz
+            [1, 148, 85, 2.580, 2.380, 100, 30, 1, 72],  # 50-100 load @ 1 kHz
+            [100, 149, 84, 2.580, 2.380, 4, 50, 0, 72],  # 50-100 load @ 100 kHz
+            [500, 150, 80, 0.400, 0.400, 1, 50, 0, 72],  # 50-100 load @ 500 kHz
+            [1000, 159, 69, 0.200, 0.200, 0.4, 50, 0, 72],  # 50-100 load @ 1 MHz
+            [1, 113, 49, 2.580, 2.180, 100, 30, 1, 108],  # 25-75 load @ 1 kHz
+            [100, 113, 49, 2.380, 2.180, 4, 50, 0, 108],  # 25-75 load @ 100 kHz
+            [500, 120, 39, 0.400, 0.400, 1, 50, 0, 108],  # 25-75 load @ 500 kHz
+            [1000, 134, 21, 0.200, 0.200, 0.4, 50, 0, 108],  # 25-75 load @ 1 MHz
+            [1, 76, 11, 2.680, 1.280, 100, 30, 1, 72],  # 0-50 load @ 1 kHz
+            [100, 77, 5, 2.880, 1.780, 4, 50, 0, 72],  # 0-50 load @ 100 kHz
+            [500, 97, -17, 0.400, 0.400, 1, 50, 0, 72],  # 0-50 load @ 500 kHz
+            [1000, 132, -52, 0.200, 0.200, 0.4, 50, 0, 72],  # 0-50 load @ 1 MHz
+            [1, 150, 9, 6.760, 5.260, 100, 30, 1, 144],  # 0-100 @ 1 kHz
+            [100, 151, 0, 3.290, 2.290, 4, 50, 0, 144],  # 0-100 @ 100 kHz
+            [500, 166, -34, 0.400, 0.400, 1, 50, 0, 144],  # 0-100 @ 500 kHz
+            [1000, 208, -85, 0.200, 0.200, 0.4, 50, 0, 144],  # 0-100 load @ 1 MHz
         ]
     )
 
@@ -567,7 +565,7 @@ class TransientProcedure(Procedure):
 
         An input with ``falling_edge`` triggers on the falling edge of ``vout_channel`` at the
         low cursor level, ``cursor_lo_abs``, shown or not; any other input triggers on the
-        rising edge of ``iout_channel`` at ``iout_trigger_level``. The scope rounds the
+        rising edge of ``iout_channel`` at the input's ``trigger_level``. The scope rounds the
         horizontal scale to one of its steps silently, so the scale that applies is logged.
 
         :param current: The input.
@@ -579,7 +577,7 @@ class TransientProcedure(Procedure):
         if current.falling_edge:
             number, slope, level = self.vout_channel, "FALL", self.cursor_lo_abs
         else:
-            number, slope, level = self.iout_channel, "RISE", self.iout_trigger_level / 1e3
+            number, slope, level = self.iout_channel, "RISE", current.trigger_level / 1e3
         scope.trigger_source = f"CH{number}"
         scope.trigger_slope = slope
         scope.channels[number].trigger_level = level

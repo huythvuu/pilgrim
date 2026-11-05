@@ -35,7 +35,6 @@ def test_uses_an_input_suited_to_each_parameter(widget: TransientInputsWidget) -
     assert isinstance(widget.use_cursor, BooleanInput)
     assert isinstance(widget.cursor_hi_abs, ScientificInput)
     assert isinstance(widget.cursor_lo_abs, ScientificInput)
-    assert isinstance(widget.iout_trigger_level, ScientificInput)
     assert isinstance(widget.pop_min, IntegerInput)
     assert type(widget.name) is StringInput
     assert type(widget.scope_capture_dir) is StringInput
@@ -52,10 +51,9 @@ def test_shows_the_defaults(widget: TransientInputsWidget) -> None:
     assert widget.use_cursor.isChecked()
     assert (widget.cursor_hi_abs.value(), widget.cursor_lo_abs.value()) == (0, 0)
     assert widget.cursor_lo_abs.minimum() < 0
-    assert (widget.iout_trigger_level.value(), widget.pop_min.value()) == (144, 300)
     duty = widget.duty_cycle
     assert (duty.value(), duty.minimum(), duty.maximum()) == (50, 1, 99)
-    assert widget.scope_capture_dir.text() == "C:/Temp/Transient/"
+    assert (widget.pop_min.value(), widget.scope_capture_dir.text()) == (300, "C:/Temp/Transient/")
 
 
 def test_cursor_levels_stay_shown_while_cursors_are_not_used(
@@ -82,7 +80,6 @@ def test_get_procedure_reads_the_inputs(widget: TransientInputsWidget) -> None:
     widget.use_cursor.setChecked(False)
     widget.cursor_hi_abs.setValue(5.25)
     widget.cursor_lo_abs.setValue(4.8)
-    widget.iout_trigger_level.setValue(150)
     widget.pop_min.setValue(50)
     widget.scope_capture_dir.setText("C:/Temp/dut1/")
     procedure = widget.get_procedure()
@@ -93,8 +90,7 @@ def test_get_procedure_reads_the_inputs(widget: TransientInputsWidget) -> None:
     assert (procedure.vout_channel, procedure.iout_channel) == (3, 4)
     assert (procedure.safe_mode, procedure.use_cursor) == (False, False)
     assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (5.25, 4.8)
-    assert (procedure.iout_trigger_level, procedure.pop_min) == (150, 50)
-    assert procedure.scope_capture_dir == "C:/Temp/dut1/"
+    assert (procedure.pop_min, procedure.scope_capture_dir) == (50, "C:/Temp/dut1/")
 
 
 def test_procedure_class_keeps_no_input_classes(widget: TransientInputsWidget) -> None:

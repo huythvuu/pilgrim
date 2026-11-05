@@ -27,8 +27,8 @@ RUN_DIRECTORY = re.compile(r"Results_\d{4}_\d{2}_\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?"
 #: Two inputs: a falling edge on Vout at 1 kHz and a rising edge on Iout at 100 kHz.
 TWO_INPUTS = np.array(
     [
-        [1, 148, 85, 2.58, 2.38, 100, 30, 1],
-        [100, 149, 84, 2.58, 2.38, 4, 50, 0],
+        [1, 148, 85, 2.58, 2.38, 100, 30, 1, 72],
+        [100, 149, 84, 2.58, 2.38, 4, 50, 0, 108],
     ],
     dtype=np.float64,
 )

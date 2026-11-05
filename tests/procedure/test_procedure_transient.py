@@ -56,11 +56,11 @@ DEFAULT_VALUES = {
     "Mean Fall Time (us)": 2.5,
 }
 #: Two inputs: one triggering on the falling edge of Vout at 1 kHz, one on the rising edge of
-#: Iout at 100 kHz.
+#: Iout at 100 kHz, at 108 mV.
 TWO_INPUTS: NDArray[np.float64] = np.array(
     [
-        [1, 148, 85, 2.58, 2.38, 100, 30, 1],
-        [100, 149, 84, 2.58, 2.38, 4, 50, 0],
+        [1, 148, 85, 2.58, 2.38, 100, 30, 1, 72],
+        [100, 149, 84, 2.58, 2.38, 4, 50, 0, 108],
     ],
     dtype=np.float64,
 )
@@ -271,8 +271,7 @@ def test_parameters_have_defaults() -> None:
     assert (procedure.vout_channel, procedure.iout_channel) == (1, 2)
     assert (procedure.safe_mode, procedure.use_cursor) == (True, True)
     assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (0, 0)
-    assert (procedure.iout_trigger_level, procedure.pop_min) == (144, 300)
-    assert procedure.scope_capture_dir == "C:/Temp/Transient/"
+    assert (procedure.pop_min, procedure.scope_capture_dir) == (300, "C:/Temp/Transient/")
 
 
 def test_data_columns_are_in_order() -> None:
@@ -311,18 +310,20 @@ def test_data_column_units_are_pint_units() -> None:
 def test_inputs_are_read_row_by_row() -> None:
     inputs = TransientProcedure().inputs()
     assert len(inputs) == len(TransientProcedure.INPUTS)
-    assert inputs[0] == Input(1, 148, 85, 2.58, 2.38, 100, 30, True)
-    assert inputs[1] == Input(100, 149, 84, 2.58, 2.38, 4, 50, False)
+    assert inputs[0] == Input(1, 148, 85, 2.58, 2.38, 100, 30, True, 72)
+    assert inputs[1] == Input(100, 149, 84, 2.58, 2.38, 4, 50, False, 72)
     # The 1 kHz inputs trigger on the falling edge of Vout, the others on the rising edge of
-    # Iout.
+    # Iout, at the trigger level of their load step.
     assert [current.falling_edge for current in inputs] == [True, False, False, False] * 4
+    levels = [current.trigger_level for current in inputs]
+    assert levels == [72] * 4 + [108] * 4 + [72] * 4 + [144] * 4
     assert inputs[0].describe() == "85 to 148 mV at 1kHz"
     assert inputs[3].describe() == "69 to 159 mV at 1MHz"
     assert inputs[10].load_step == "-17 to 97 mV"
 
 
 def test_input_row_must_hold_one_value_per_field() -> None:
-    with pytest.raises(ValueError, match="needs 8 values, not 3"):
+    with pytest.raises(ValueError, match="needs 9 values, not 3"):
         Input.from_row(np.array([1.0, 2.0, 3.0]))
 
 
@@ -438,8 +439,8 @@ def test_execute_sets_the_instruments_and_records_a_row_for_every_input(
     procedure.execute()
     # The AFG takes the frequency first and the edges last; the scope follows, triggering on the
     # falling edge of Vout at the low cursor level for the first input and on the rising edge
-    # of Iout at the Iout trigger level for the second; each input then acquires once and ends
-    # with its capture.
+    # of Iout at the input's trigger level for the second; each input then acquires once and
+    # ends with its capture.
     assert events == [
         ("afg", "frequency", 1000.0),
         ("afg", "pulse_dutycycle", 50),
@@ -471,7 +472,7 @@ def test_execute_sets_the_instruments_and_records_a_row_for_every_input(
         ("trigger_type", "EDGE"),
         ("trigger_source", "CH2"),
         ("trigger_slope", "RISE"),
-        ("trigger_level", 2, 0.144),
+        ("trigger_level", 2, 0.108),
         ("clear",),
         ("acquisition", True),
         ("acquisition", False),
@@ -541,7 +542,7 @@ def test_execute_in_safe_mode_pauses_with_the_acquisition_running_after_each_inp
         ("clear",),
         ("acquisition", False),
         ("save_image", "C:/Temp/Transient/0Vin transient 85to148mV 1kHz.png"),
-        ("trigger_level", 2, 0.144),
+        ("trigger_level", 2, 0.108),
         ("clear",),
         ("acquisition", True),
         ("pause", "Input 2 of 2 set: 84 to 149 mV at 100kHz. Adjust the scope if required."),
@@ -721,7 +722,7 @@ def test_overshoot_and_undershoot_of_a_zero_mean_are_nan() -> None:
 def test_capture_file_name(vin: float, text: str) -> None:
     procedure = TransientProcedure(vin=vin, name="transient")
     procedure.refresh_parameters()
-    current = Input(500, 97, -17, 0.4, 0.4, 1, 50, False)
+    current = Input(500, 97, -17, 0.4, 0.4, 1, 50, False, 72)
     assert procedure.capture_file_name(current) == f"{text} transient -17to97mV 500kHz.png"
 
 
