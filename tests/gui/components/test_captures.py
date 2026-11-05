@@ -6,8 +6,8 @@ from pathlib import Path
 from pymeasure.display.Qt import QtGui
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import CapturesWidget
-from pilgrim.gui.ripple.components.captures import IDLE_TEXT
+from pilgrim.gui.components import CapturesWidget
+from pilgrim.gui.components.captures import IDLE_TEXT
 
 RED = QtGui.QColor("red")
 BLUE = QtGui.QColor("blue")

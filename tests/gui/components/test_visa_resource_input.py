@@ -5,7 +5,7 @@ import logging
 import pytest
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import (
+from pilgrim.gui.components import (
     VisaResourceInput,
     list_visa_resources,
     visa_resource_input,

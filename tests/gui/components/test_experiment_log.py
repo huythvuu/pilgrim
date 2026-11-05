@@ -8,8 +8,8 @@ import pytest
 from pymeasure.display.Qt import QtWidgets
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import ExperimentLogWidget
-from pilgrim.gui.ripple.components.experiment_log import IDLE_TEXT
+from pilgrim.gui.components import ExperimentLogWidget
+from pilgrim.gui.components.experiment_log import IDLE_TEXT
 
 
 @pytest.fixture

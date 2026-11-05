@@ -7,11 +7,9 @@ from pymeasure.display.inputs import BooleanInput, IntegerInput, ScientificInput
 from pymeasure.display.Qt import QtWidgets
 from pymeasure.display.widgets import InputsWidget
 
+from pilgrim.gui.components import ListInput, VisaResourceInput
 from pilgrim.procedure import RippleProcedure
 from pilgrim.procedure.parameters import FloatListParameter, IntegerListParameter
-
-from .list_input import ListInput
-from .visa_resource_input import VisaResourceInput
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())

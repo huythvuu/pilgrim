@@ -1,4 +1,4 @@
-"""Text input of the list parameters of the ripple procedure, checked as it is typed."""
+"""Text input of a list parameter of a procedure, checked as it is typed."""
 
 import logging
 from collections.abc import Sequence

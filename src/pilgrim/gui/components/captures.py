@@ -1,4 +1,4 @@
-"""Tab that shows the captures the running ripple procedure moves to this computer."""
+"""Tab that shows the captures the running procedure moves to this computer."""
 
 import logging
 from pathlib import Path

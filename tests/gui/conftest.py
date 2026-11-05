@@ -7,7 +7,7 @@ from collections.abc import Iterator
 import pytest
 from pymeasure.display.log import LogHandler
 
-from pilgrim.gui.ripple import RunLogHandler
+from pilgrim.gui.run_log import RunLogHandler
 
 # Qt reads the platform when the application is created, which pytest-qt does lazily at the
 # first test that needs it, so setting it here is early enough.
@@ -19,7 +19,7 @@ def restore_root_logger() -> Iterator[None]:
     """Undo what a window does to the root logger, which other tests' log capture relies on.
 
     PyMeasure's window sets the root logger to INFO and shows its records in the log tab, and the
-    ripple window saves them to the log file of each run.
+    procedure windows save them to the log file of each run.
     """
     root = logging.getLogger()
     level = root.level

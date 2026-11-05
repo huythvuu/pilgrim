@@ -5,7 +5,8 @@ from pymeasure.display.inputs import BooleanInput, IntegerInput, ScientificInput
 from pymeasure.display.Qt import QtWidgets
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import ListInput, RippleInputsWidget, VisaResourceInput
+from pilgrim.gui.components import ListInput, VisaResourceInput
+from pilgrim.gui.ripple.components import RippleInputsWidget
 from pilgrim.procedure import RippleProcedure
 
 

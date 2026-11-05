@@ -1,4 +1,4 @@
-"""Panel that shows the messages of the ripple procedure and lets the user pause and resume it."""
+"""Panel that shows the running procedure's messages and lets the user pause and resume it."""
 
 # QtPy builds Signal from the binding's class under an alias, which pyright takes for an import
 # that is not re-exported.
@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
 #: What the panel says while no procedure runs.
-IDLE_TEXT = "The procedure reports here when it pauses, whenever the load must be set or on Pause."
+IDLE_TEXT = "The procedure reports here whenever it pauses, on its own or on Pause."
 #: What the panel says while the procedure runs and may be paused.
 RUNNING_TEXT = "Running. Pause holds the procedure at its next step."
 #: What the panel says from Pause until the procedure has paused.
@@ -20,7 +20,7 @@ PAUSING_TEXT = "Pausing at the next step..."
 
 
 class MessageWidget(QtWidgets.QWidget):
-    """Show the messages of the ripple procedure, with Pause and Resume buttons.
+    """Show the messages of the running procedure, with Pause and Resume buttons.
 
     Pass :meth:`prompt` to the procedure as its ``pause_handler``: it may be called from the
     worker thread and hands the prompt to the GUI thread, where :meth:`show_prompt` displays it
@@ -31,6 +31,8 @@ class MessageWidget(QtWidgets.QWidget):
     apply only while one runs.
 
     :param parent: The parent widget.
+    :param idle_text: What the panel says while no procedure runs; :data:`IDLE_TEXT` by
+        default.
     """
 
     #: Emitted when the user presses Pause.
@@ -42,9 +44,10 @@ class MessageWidget(QtWidgets.QWidget):
     # Carries a prompt from any thread to the GUI thread through a queued connection.
     _requested = QtCore.Signal(str)
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None, idle_text: str = IDLE_TEXT) -> None:
         super().__init__(parent)
-        self.message = QtWidgets.QLabel(IDLE_TEXT, self)
+        self._idle_text = idle_text
+        self.message = QtWidgets.QLabel(idle_text, self)
         self.message.setWordWrap(True)
         self.pause_button = QtWidgets.QPushButton("Pause", self)
         self.pause_button.setEnabled(False)
@@ -95,7 +98,7 @@ class MessageWidget(QtWidgets.QWidget):
 
         :param running: Whether a procedure runs.
         """
-        self._show(RUNNING_TEXT if running else IDLE_TEXT, bold=False)
+        self._show(RUNNING_TEXT if running else self._idle_text, bold=False)
         self.pause_button.setEnabled(running)
         self.resume_button.setEnabled(False)
 

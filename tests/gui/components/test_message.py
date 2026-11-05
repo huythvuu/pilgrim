@@ -4,8 +4,8 @@ import threading
 
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import MessageWidget
-from pilgrim.gui.ripple.components.message import IDLE_TEXT, PAUSING_TEXT, RUNNING_TEXT
+from pilgrim.gui.components import MessageWidget
+from pilgrim.gui.components.message import IDLE_TEXT, PAUSING_TEXT, RUNNING_TEXT
 
 
 def test_starts_idle(qtbot: QtBot) -> None:

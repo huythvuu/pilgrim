@@ -7,7 +7,7 @@ import pytest
 from pymeasure.display.Qt import QtCore, QtGui
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import PathBanner
+from pilgrim.gui.components import PathBanner
 
 IDLE_TEXT = "Nothing is named."
 

@@ -3,8 +3,8 @@
 import pytest
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import ListInput
-from pilgrim.gui.ripple.components.list_input import format_element
+from pilgrim.gui.components import ListInput
+from pilgrim.gui.components.list_input import format_element
 from pilgrim.procedure.parameters import FloatListParameter, IntegerListParameter
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pilgrim.gui.ripple.run_log import RunLogHandler, unique_log_path
+from pilgrim.gui.run_log import RunLogHandler, unique_log_path
 
 
 class Runs:

@@ -1,4 +1,4 @@
-"""Input of the VISA resource name of the scope, listing the instruments VISA finds."""
+"""Input of the VISA resource name of an instrument, listing the instruments VISA finds."""
 
 import logging
 from collections.abc import Callable, Sequence

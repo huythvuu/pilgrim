@@ -12,10 +12,11 @@ from pymeasure.display.Qt import QtCore, QtWidgets
 from pymeasure.experiment import Procedure
 from pytestqt.qtbot import QtBot
 
+from pilgrim.gui.components import MessageWidget
+from pilgrim.gui.components.message import PAUSING_TEXT, RUNNING_TEXT
 from pilgrim.gui.ripple import RippleWindow
-from pilgrim.gui.ripple.components import MessageWidget, RippleInputsWidget
-from pilgrim.gui.ripple.components.message import PAUSING_TEXT, RUNNING_TEXT
-from pilgrim.gui.ripple.window import DEFAULT_FILENAME, SPLITTER_HANDLE_WIDTH
+from pilgrim.gui.ripple.components import RippleInputsWidget
+from pilgrim.gui.window import SPLITTER_HANDLE_WIDTH
 from pilgrim.procedure import RippleProcedure, procedure_ripple
 from pilgrim.procedure.procedure_ripple import PAUSE_PROMPT, capture_hyperlink
 
@@ -117,7 +118,7 @@ def test_is_built_for_the_ripple_procedure(window: RippleWindow) -> None:
     assert window.table_widget.banner.path is None
     assert window.captures_widget.banner.path is None
     assert window.log_widget.banner.path is None
-    assert window.filename == DEFAULT_FILENAME
+    assert window.filename == RippleWindow.DEFAULT_FILENAME
     assert window.windowTitle() == "Ripple capture"
 
 

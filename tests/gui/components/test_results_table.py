@@ -5,7 +5,7 @@ from pathlib import Path
 from pymeasure.display.Qt import QtWidgets
 from pytestqt.qtbot import QtBot
 
-from pilgrim.gui.ripple.components import ResultsTableWidget
+from pilgrim.gui.components import ResultsTableWidget
 
 COLUMNS = ["Load (A)", "Vmean (V)"]
 
