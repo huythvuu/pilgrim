@@ -45,18 +45,21 @@ If an instrument is missing, check it in NI MAX (NI Measurement & Automation Exp
 src/pilgrim/
     instruments/<manufacturer>/   Instrument drivers, one module per instrument family
     procedure/                    Test procedures and their parameter types
-    gui/<procedure>/              GUI of a procedure: its window and, in components/, its widgets
+    gui/                          Window base, application start-up and run log shared by the GUIs
+    gui/components/               Widgets shared by the GUIs
+    gui/<procedure>/              GUI of a procedure: its window and, in components/, its own widgets
 tests/
     instruments/<manufacturer>/   Protocol tests (no hardware) and *_with_device tests
     procedure/                    Procedure tests against mock instruments
-    gui/<procedure>/              GUI tests, run offscreen with pytest-qt
+    gui/components/               Tests of the shared widgets, run offscreen with pytest-qt
+    gui/<procedure>/              GUI tests of a procedure, run offscreen with pytest-qt
 docs/manuals/<manufacturer>/      Programmer manuals (not committed, download locally)
 ```
 
 ## Running the ripple GUI
 
 ```sh
-uv run pilgrim-ripple
+uv run ripple
 ```
 
 The window edits the parameters of the ripple procedure, queues runs, and shows their results, captures and log.
@@ -65,6 +68,16 @@ The results file and its log go there, and the captures in `captures/` inside it
 The procedure pauses whenever the load must be set; the window then prompts for it in the Message panel and beeps, and Resume continues the procedure once the load is set.
 Pause holds the running procedure at its next step, stopping the acquisition meanwhile, until Resume is pressed.
 Abort ends a paused procedure as well.
+
+## Running the transient GUI
+
+```sh
+uv run transient
+```
+
+The window has the same layout as the ripple one and edits the parameters of the transient procedure, which goes through its built-in table of inputs, setting the function generator and the scope for each.
+In safe mode, on by default, the procedure stops the acquisition and pauses once the instruments are set for an input; the Message panel names the input, so the scope can be adjusted, and Resume starts the acquisition.
+Pause and Abort work as in the ripple window.
 
 ## Development
 
