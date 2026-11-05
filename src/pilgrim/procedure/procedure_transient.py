@@ -144,33 +144,33 @@ class Input(NamedTuple):
 
 
 def overshoot_percent(maximum: float, mean: float) -> float:
-    """Return how far a rail rises above its mean, as a percentage of the mean's magnitude.
+    """Return how far a rail's maximum lies above its mean, as a percentage of the mean.
 
-    A maximum of 5.5 V on a mean of 5 V gives 10 %, as does a maximum of -4.5 V on a mean of
-    -5 V, so the percentage is positive whenever the maximum lies above the mean.
+    A maximum of 5.5 V on a mean of 5 V gives 10 %. The mean keeps its sign, so the same
+    distance above a mean of -5 V gives -10 %.
 
     :param maximum: The highest voltage in volts.
     :param mean: The mean voltage in volts.
-    :returns: ``(maximum - mean) / abs(mean) * 100``, NaN when the mean is zero.
+    :returns: ``(maximum - mean) / mean * 100``, NaN when the mean is zero.
     """
     if mean == 0:
         return math.nan
-    return (maximum - mean) / abs(mean) * 100
+    return (maximum - mean) / mean * 100
 
 
 def undershoot_percent(minimum: float, mean: float) -> float:
-    """Return how far a rail dips below its mean, as a percentage of the mean's magnitude.
+    """Return how far a rail's minimum lies below its mean, as a percentage of the mean.
 
-    A minimum of 4 V on a mean of 5 V gives 20 %, as does a minimum of -6 V on a mean of -5 V,
-    so the percentage is positive whenever the minimum lies below the mean.
+    A minimum of 4 V on a mean of 5 V gives -20 %: a dip below a positive mean is negative. The
+    mean keeps its sign, so the same dip below a mean of -5 V gives 20 %.
 
     :param minimum: The lowest voltage in volts.
     :param mean: The mean voltage in volts.
-    :returns: ``(mean - minimum) / abs(mean) * 100``, NaN when the mean is zero.
+    :returns: ``(minimum - mean) / mean * 100``, NaN when the mean is zero.
     """
     if mean == 0:
         return math.nan
-    return (mean - minimum) / abs(mean) * 100
+    return (minimum - mean) / mean * 100
 
 
 class TransientProcedure(Procedure):
@@ -187,13 +187,14 @@ class TransientProcedure(Procedure):
     off, see :meth:`set_up_afg`.
 
     Execute goes through :attr:`INPUTS` in order, see :meth:`execute`. With ``safe_mode`` set,
-    the procedure stops the acquisition and pauses once the instruments are set for an input,
-    so the user can adjust the scope before the acquisition starts: it hands a prompt to
-    :attr:`pause_handler` and waits until :meth:`resume` is called, or until it is asked to
-    stop. By default the prompt is printed and Enter resumes, as on a command line; a GUI
-    replaces the handler with one that shows the prompt and resumes from a button. The user can
-    also ask for a pause at any time through :meth:`request_pause`, which the procedure honours
-    at its next step with the prompt ``PAUSE_PROMPT``.
+    the procedure starts the acquisition and pauses once the instruments are set for an input,
+    so the user can adjust the scope against the live trace: it hands a prompt to
+    :attr:`pause_handler` and waits until :meth:`resume` is called, which clears the statistics
+    taken meanwhile, or until it is asked to stop. By default the prompt is printed and Enter
+    resumes, as on a command line; a GUI replaces the handler with one that shows the prompt
+    and resumes from a button. The user can also ask for a pause at any time through
+    :meth:`request_pause`, which the procedure honours at its next step with the prompt
+    ``PAUSE_PROMPT``.
     """
 
     name = StringParameter(
@@ -212,6 +213,14 @@ class TransientProcedure(Procedure):
         description="VISA resource name of the oscilloscope",
     )
     vin = FloatParameter("Vin", units="V", default=0, description="Nominal input voltage")
+    duty_cycle = IntegerParameter(
+        "Duty cycle",
+        units="%",
+        default=50,
+        minimum=1,
+        maximum=99,
+        description="Duty cycle of the load pulse at every input",
+    )
     vout_channel = IntegerParameter(
         "Vout channel",
         default=1,
@@ -229,7 +238,7 @@ class TransientProcedure(Procedure):
     safe_mode = BooleanParameter(
         "Run in safe mode",
         default=True,
-        description="Procedure stops after each input change for you to verify scope readings",
+        description="Pause after each input change, with a live trace, to adjust the scope",
     )
     use_cursor = BooleanParameter(
         "Use cursors",
@@ -370,11 +379,12 @@ class TransientProcedure(Procedure):
         values.
 
         Each input sets the AFG pulse, see :meth:`set_afg`, and the scope's horizontal scale,
-        position and trigger, see :meth:`set_scope`. With ``safe_mode`` set, the procedure then
-        stops the acquisition and pauses for the user to adjust the scope, see :meth:`pause`.
-        It then clears the statistics, acquires until the measurements are populated, stops,
-        saves a screen capture to :attr:`capture_directory` and records one row of
-        :attr:`DATA_COLUMNS`. Stops early when asked to.
+        position and trigger, see :meth:`set_scope`, then clears the statistics and starts the
+        acquisition. With ``safe_mode`` set, the procedure pauses there for the user to adjust
+        the scope against the live trace, see :meth:`pause`, and clears the statistics again
+        once resumed. It acquires until the measurements are populated, stops, saves a screen
+        capture to :attr:`capture_directory` and records one row of :attr:`DATA_COLUMNS`. Stops
+        early when asked to.
 
         :raises ValueError: If the scope lacks a required measurement of ``vout_channel`` or
             ``iout_channel``, or a capture could not be saved.
@@ -403,21 +413,23 @@ class TransientProcedure(Procedure):
             log.info(f"Input {done} of {len(inputs)}: {current.describe()}.")
             self.set_afg(current)
             self.set_scope(current)
-            if self.safe_mode:
-                # The acquisition stays stopped while the user adjusts the scope, so nothing
-                # taken with the settings in flux reaches the statistics.
-                self.scope.acquisition_enabled = False
-                prompt = (
-                    f"Input {done} of {len(inputs)} set: {current.describe()}. Adjust the "
-                    "scope if required."
-                )
-                if not self.pause(prompt):
-                    log.info("Transient measurement stopped.")
-                    return
             # Starting acquisition carries the statistics on, so they are cleared first.
             self.scope.clear_acquisitions()
             _ = self.scope.complete  # The scope clears in the background.
             self.scope.acquisition_enabled = True
+            if self.safe_mode:
+                prompt = (
+                    f"Input {done} of {len(inputs)} set: {current.describe()}. Adjust the "
+                    "scope if required."
+                )
+                # The acquisition runs meanwhile, so the user adjusts the scope against the
+                # live trace; what the statistics took in with the settings in flux is cleared.
+                if not self.pause(prompt):
+                    self.scope.acquisition_enabled = False
+                    log.info("Transient measurement stopped.")
+                    return
+                self.scope.clear_acquisitions()
+                _ = self.scope.complete  # The scope clears in the background.
             filled = self._wait_for_population(numbers)
             self.scope.acquisition_enabled = False
             if not filled:
@@ -526,26 +538,28 @@ class TransientProcedure(Procedure):
         log.info("AFG set to a pulse holding its duty cycle, output off.")
 
     def set_afg(self, current: Input) -> None:
-        """Set the AFG pulse to an input and turn the output on.
+        """Set the AFG pulse to an input, at ``duty_cycle``, and turn the output on.
 
-        The frequency goes first, since it narrows the range of the edge times and the AFG
-        moves an edge outside it on its own; the levels follow, in either order, since the AFG
-        moves the other level along when they would cross; the edges come last.
+        The frequency goes first and the duty cycle next, since together they set the pulse
+        width that bounds the edge times, and the AFG moves an edge outside the bounds on its
+        own; the levels follow, in either order, since the AFG moves the other level along when
+        they would cross; the edges come last.
 
         :param current: The input.
         :raises ValueError: If the AFG rejects a setting, e.g. an edge time too long for the
-            frequency.
+            pulse width.
         """
         channel = self.afg.ch1
         channel.frequency = current.frequency * 1e3
+        channel.pulse_dutycycle = self.duty_cycle
         channel.amplitude_high = current.high / 1e3
         channel.amplitude_low = current.low / 1e3
         channel.pulse_leading = current.leading
         channel.pulse_trailing = current.trailing
         channel.output_enabled = True
         log.info(
-            f"AFG pulse set to {current.describe()}, edges {current.leading:g} us and "
-            f"{current.trailing:g} us, output on."
+            f"AFG pulse set to {current.describe()}, {self.duty_cycle} % duty cycle, edges "
+            f"{current.leading:g} us and {current.trailing:g} us, output on."
         )
 
     def set_scope(self, current: Input) -> None:
@@ -720,8 +734,8 @@ class TransientProcedure(Procedure):
     ) -> dict[str, float]:
         """Read the statistics of :data:`RESULTS` from the scope, derive the rest, and log them.
 
-        The overshoot and undershoot are how far Max Vmax rises above and Min Vmin dips below
-        Mean Vmean, as percentages of the mean, see :func:`overshoot_percent` and
+        The overshoot and undershoot are Max Vmax and Min Vmin relative to Mean Vmean, all read
+        for this row, as percentages of that mean, see :func:`overshoot_percent` and
         :func:`undershoot_percent`; they are derived from the values as read, in volts. Every
         value is then scaled to the unit of its column and rounded to :data:`RESULT_DECIMALS`
         decimal places.

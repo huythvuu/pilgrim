@@ -51,7 +51,7 @@ DEFAULT_VALUES = {
     "Min Vmin (mV)": 4000.0,
     "Mean Vpk2pk (mV)": 250.0,
     "Overshoot (%)": 10.0,
-    "Undershoot (%)": 20.0,
+    "Undershoot (%)": -20.0,
     "Mean Rise Time (us)": 1.5,
     "Mean Fall Time (us)": 2.5,
 }
@@ -193,6 +193,7 @@ def make_afg(events: list[tuple[Any, ...]]) -> MagicMock:
         "shape",
         "pulse_hold",
         "frequency",
+        "pulse_dutycycle",
         "amplitude_high",
         "amplitude_low",
         "pulse_leading",
@@ -266,7 +267,8 @@ def test_parameters_have_defaults() -> None:
     procedure = TransientProcedure()
     assert procedure.name == "transient"
     assert (procedure.afg_resource, procedure.scope_resource) == ("", "")
-    assert (procedure.vin, procedure.vout_channel, procedure.iout_channel) == (0, 1, 2)
+    assert (procedure.vin, procedure.duty_cycle) == (0, 50)
+    assert (procedure.vout_channel, procedure.iout_channel) == (1, 2)
     assert (procedure.safe_mode, procedure.use_cursor) == (True, True)
     assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (0, 0)
     assert (procedure.iout_trigger_level, procedure.pop_min) == (144, 300)
@@ -440,6 +442,7 @@ def test_execute_sets_the_instruments_and_records_a_row_for_every_input(
     # with its capture.
     assert events == [
         ("afg", "frequency", 1000.0),
+        ("afg", "pulse_dutycycle", 50),
         ("afg", "amplitude_high", 0.148),
         ("afg", "amplitude_low", 0.085),
         ("afg", "pulse_leading", 2.58),
@@ -457,6 +460,7 @@ def test_execute_sets_the_instruments_and_records_a_row_for_every_input(
         ("save_image", FIRST_CAPTURE),
         ("delete_file", FIRST_CAPTURE),
         ("afg", "frequency", 100000.0),
+        ("afg", "pulse_dutycycle", 50),
         ("afg", "amplitude_high", 0.149),
         ("afg", "amplitude_low", 0.084),
         ("afg", "pulse_leading", 2.58),
@@ -518,7 +522,7 @@ def test_execute_acquires_until_every_population_fills(monkeypatch: pytest.Monke
     ]
 
 
-def test_execute_in_safe_mode_pauses_with_acquisition_stopped_after_each_input(
+def test_execute_in_safe_mode_pauses_with_the_acquisition_running_after_each_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[tuple[Any, ...]] = []
@@ -527,19 +531,21 @@ def test_execute_in_safe_mode_pauses_with_acquisition_stopped_after_each_input(
     record_pauses_and_resume(procedure, events)
     procedure.execute()
     kinds = ("trigger_level", "acquisition", "pause", "clear", "save_image")
+    # The trace is live while the user adjusts the scope, and the statistics are cleared again
+    # on resume, so nothing taken meanwhile counts.
     assert [event for event in events if event[0] in kinds] == [
         ("trigger_level", 1, 0.0),
-        ("acquisition", False),
-        ("pause", "Input 1 of 2 set: 85 to 148 mV at 1kHz. Adjust the scope if required."),
         ("clear",),
         ("acquisition", True),
+        ("pause", "Input 1 of 2 set: 85 to 148 mV at 1kHz. Adjust the scope if required."),
+        ("clear",),
         ("acquisition", False),
         ("save_image", "C:/Temp/Transient/0Vin transient 85to148mV 1kHz.png"),
         ("trigger_level", 2, 0.144),
-        ("acquisition", False),
-        ("pause", "Input 2 of 2 set: 84 to 149 mV at 100kHz. Adjust the scope if required."),
         ("clear",),
         ("acquisition", True),
+        ("pause", "Input 2 of 2 set: 84 to 149 mV at 100kHz. Adjust the scope if required."),
+        ("clear",),
         ("acquisition", False),
         ("save_image", "C:/Temp/Transient/0Vin transient 84to149mV 100kHz.png"),
     ]
@@ -565,7 +571,9 @@ def test_execute_stops_while_paused_in_safe_mode_when_asked_to(
     procedure.pause_handler = lambda prompt: stop.set()
     monkeypatch.setattr(procedure, "should_stop", stop.is_set)
     procedure.execute()
-    assert events[-2:] == [("trigger_level", 1, 0.0), ("acquisition", False)]
+    # The acquisition started for the live trace is stopped, and never cleared for a resume.
+    assert events[-3:] == [("clear",), ("acquisition", True), ("acquisition", False)]
+    assert events.count(("clear",)) == 1
     emit: Any = procedure.emit
     emit.assert_not_called()
 
@@ -683,14 +691,14 @@ def test_execute_logs_every_input(
     assert "Starting transient measurement over 2 inputs." in caplog.messages
     assert "Input 1 of 2: 85 to 148 mV at 1kHz." in caplog.messages
     assert (
-        "AFG pulse set to 84 to 149 mV at 100kHz, edges 2.58 us and 2.38 us, output on."
-        in caplog.messages
+        "AFG pulse set to 84 to 149 mV at 100kHz, 50 % duty cycle, edges 2.58 us and "
+        "2.38 us, output on." in caplog.messages
     )
 
 
 @pytest.mark.parametrize(
     ("maximum", "mean", "percent"),
-    [(5.5, 5.0, 10.0), (-4.5, -5.0, 10.0), (5.0, 5.0, 0.0), (4.9, 5.0, -2.0)],
+    [(5.5, 5.0, 10.0), (-4.5, -5.0, -10.0), (5.0, 5.0, 0.0), (4.9, 5.0, -2.0)],
 )
 def test_overshoot_percent(maximum: float, mean: float, percent: float) -> None:
     assert procedure_transient.overshoot_percent(maximum, mean) == pytest.approx(percent)
@@ -698,7 +706,7 @@ def test_overshoot_percent(maximum: float, mean: float, percent: float) -> None:
 
 @pytest.mark.parametrize(
     ("minimum", "mean", "percent"),
-    [(4.0, 5.0, 20.0), (-6.0, -5.0, 20.0), (5.0, 5.0, 0.0), (5.1, 5.0, -2.0)],
+    [(4.0, 5.0, -20.0), (-6.0, -5.0, 20.0), (5.0, 5.0, 0.0), (5.1, 5.0, 2.0)],
 )
 def test_undershoot_percent(minimum: float, mean: float, percent: float) -> None:
     assert procedure_transient.undershoot_percent(minimum, mean) == pytest.approx(percent)
