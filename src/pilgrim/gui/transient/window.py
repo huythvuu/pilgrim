@@ -19,9 +19,10 @@ from .components import INPUTS, TransientInputsWidget
 class TransientWindow(ProcedureWindow):
     """Run the transient procedure: edit its parameters, queue runs and follow them.
 
-    A :class:`ProcedureWindow` of :class:`TransientProcedure`. In safe mode the procedure stops
+    A :class:`ProcedureWindow` of :class:`TransientProcedure`. In safe mode the procedure starts
     the acquisition and pauses once the instruments are set for an input; the message panel
-    then names the input, so the scope can be adjusted before Resume starts the acquisition.
+    then names the input, so the scope can be adjusted against the live trace, and Resume
+    clears the statistics and lets the acquisition fill them.
 
     :param parent: The parent widget.
     """

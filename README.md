@@ -76,7 +76,7 @@ uv run transient
 ```
 
 The window has the same layout as the ripple one and edits the parameters of the transient procedure, which goes through its built-in table of inputs, setting the function generator and the scope for each.
-In safe mode, on by default, the procedure stops the acquisition and pauses once the instruments are set for an input; the Message panel names the input, so the scope can be adjusted, and Resume starts the acquisition.
+In safe mode, on by default, the procedure starts the acquisition and pauses once the instruments are set for an input; the Message panel names the input, so the scope can be adjusted against the live trace, and Resume clears the statistics and lets the acquisition fill them.
 Pause and Abort work as in the ripple window.
 
 ## Development
