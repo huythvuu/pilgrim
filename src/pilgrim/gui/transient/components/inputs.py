@@ -13,6 +13,7 @@ INPUTS = (
     "afg_resource",
     "scope_resource",
     "vin",
+    "duty_cycle",
     "vout_channel",
     "iout_channel",
     "safe_mode",
@@ -47,6 +48,7 @@ class TransientInputsWidget(InputsWidget):
     afg_resource: VisaResourceInput
     scope_resource: VisaResourceInput
     vin: ScientificInput
+    duty_cycle: IntegerInput
     vout_channel: IntegerInput
     iout_channel: IntegerInput
     safe_mode: BooleanInput

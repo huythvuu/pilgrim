@@ -30,6 +30,7 @@ def test_uses_an_input_suited_to_each_parameter(widget: TransientInputsWidget) -
     assert isinstance(widget.vin, ScientificInput)
     assert isinstance(widget.vout_channel, IntegerInput)
     assert isinstance(widget.iout_channel, IntegerInput)
+    assert isinstance(widget.duty_cycle, IntegerInput)
     assert isinstance(widget.safe_mode, BooleanInput)
     assert isinstance(widget.use_cursor, BooleanInput)
     assert isinstance(widget.cursor_hi_abs, ScientificInput)
@@ -52,6 +53,8 @@ def test_shows_the_defaults(widget: TransientInputsWidget) -> None:
     assert (widget.cursor_hi_abs.value(), widget.cursor_lo_abs.value()) == (0, 0)
     assert widget.cursor_lo_abs.minimum() < 0
     assert (widget.iout_trigger_level.value(), widget.pop_min.value()) == (144, 300)
+    duty = widget.duty_cycle
+    assert (duty.value(), duty.minimum(), duty.maximum()) == (50, 1, 99)
     assert widget.scope_capture_dir.text() == "C:/Temp/Transient/"
 
 
@@ -74,6 +77,7 @@ def test_get_procedure_reads_the_inputs(widget: TransientInputsWidget) -> None:
     widget.vin.setValue(12)
     widget.vout_channel.setValue(3)
     widget.iout_channel.setValue(4)
+    widget.duty_cycle.setValue(25)
     widget.safe_mode.setChecked(False)
     widget.use_cursor.setChecked(False)
     widget.cursor_hi_abs.setValue(5.25)
@@ -85,7 +89,8 @@ def test_get_procedure_reads_the_inputs(widget: TransientInputsWidget) -> None:
     assert isinstance(procedure, TransientProcedure)
     assert procedure.name == "dut1"
     assert (procedure.afg_resource, procedure.scope_resource) == (AFG_RESOURCE, SCOPE_RESOURCE)
-    assert (procedure.vin, procedure.vout_channel, procedure.iout_channel) == (12, 3, 4)
+    assert (procedure.vin, procedure.duty_cycle) == (12, 25)
+    assert (procedure.vout_channel, procedure.iout_channel) == (3, 4)
     assert (procedure.safe_mode, procedure.use_cursor) == (False, False)
     assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (5.25, 4.8)
     assert (procedure.iout_trigger_level, procedure.pop_min) == (150, 50)
