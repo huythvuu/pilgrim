@@ -514,7 +514,7 @@ def test_execute_acquires_until_population_at_every_combination(
     ]
     assert next(populations, None) is None
     emit: Any = procedure.emit
-    row = {"Vin (V)": 12, "Load (A)": 0, "Horizontal Div (s)": 1e-6}
+    row = {"Vin (V)": 12.0, "Load (A)": 0, "Horizontal Div (s)": 1e-6}
     # MEAS1 to MEAS4 give a mean of 0.5 V, a maximum of 2 V, a minimum of -3 V and a mean
     # peak-to-peak of 2 V, recorded in mV, which is 400 % of the mean.
     values = {
@@ -1016,10 +1016,11 @@ def test_capture_hyperlink_is_an_excel_formula_with_the_relative_path() -> None:
     assert "#" not in formula
 
 
-def test_capture_file_name() -> None:
-    procedure = RippleProcedure(vin=12, name="ripple")
+@pytest.mark.parametrize(("vin", "text"), [(12, "12Vin"), (6.6, "6.6Vin"), (0, "0Vin")])
+def test_capture_file_name(vin: float, text: str) -> None:
+    procedure = RippleProcedure(vin=vin, name="ripple")
     procedure.refresh_parameters()
-    assert procedure.capture_file_name(1.5, 1e-3, 250e6) == "12Vin ripple 1.5A 1ms 250MHz.png"
+    assert procedure.capture_file_name(1.5, 1e-3, 250e6) == f"{text} ripple 1.5A 1ms 250MHz.png"
 
 
 @pytest.mark.parametrize(

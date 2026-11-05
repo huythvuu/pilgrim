@@ -37,7 +37,7 @@ log.addHandler(logging.NullHandler())
 #: The parameters the experiment browser shows a column of.
 DISPLAYS = ("vin", "channel", "loads", "horizontal_divs", "bandwidths")
 #: The default results file name, with parameter placeholders; PyMeasure appends an index.
-DEFAULT_FILENAME = "{Procedure name}_{Vin}Vin"
+DEFAULT_FILENAME = "{Procedure name}_{Vin:g}Vin"
 #: The width in pixels of the handle between the tabs and the experiment browser.
 SPLITTER_HANDLE_WIDTH = 8
 

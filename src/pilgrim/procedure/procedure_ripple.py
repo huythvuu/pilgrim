@@ -211,7 +211,7 @@ class RippleProcedure(Procedure):
         maximum=8,
         description="Scope channel of the output voltage",
     )
-    vin = IntegerParameter("Vin", default=0, description="Nominal input voltage")
+    vin = FloatParameter("Vin", units="V", default=0, description="Nominal input voltage")
     loads = FloatListParameter(
         "Loads",
         units="A",
@@ -578,13 +578,14 @@ class RippleProcedure(Procedure):
         :param load: The load current in amperes.
         :param horizontal_div: The horizontal scale in seconds per division.
         :param bandwidth: The bandwidth limit in Hz.
-        :returns: The file name, e.g. ``"12Vin ripple 1.5A 1us 20MHz.png"``, with all three
-            values formatted by :func:`format_with_si_prefix`.
+        :returns: The file name, e.g. ``"12Vin ripple 1.5A 1us 20MHz.png"``, with ``vin``
+            written without trailing zeros and the three values formatted by
+            :func:`format_with_si_prefix`.
         """
         current = format_with_si_prefix(load, "A")
         time = format_with_si_prefix(horizontal_div, "s")
         frequency = format_with_si_prefix(bandwidth, "Hz")
-        return f"{self.vin}Vin {self.name} {current} {time} {frequency}.png"
+        return f"{self.vin:g}Vin {self.name} {current} {time} {frequency}.png"
 
     def _make_scope_capture_dir(self) -> str:
         """Create ``scope_capture_dir`` on the scope where it does not exist, level by level.

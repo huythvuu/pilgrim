@@ -23,7 +23,7 @@ def test_uses_an_input_suited_to_each_parameter(widget: RippleInputsWidget) -> N
     assert isinstance(widget.horizontal_divs, ListInput)
     assert isinstance(widget.bandwidths, ListInput)
     assert isinstance(widget.channel, IntegerInput)
-    assert isinstance(widget.vin, IntegerInput)
+    assert isinstance(widget.vin, ScientificInput)
     assert isinstance(widget.pop_min, IntegerInput)
     assert isinstance(widget.target, ScientificInput)
     assert isinstance(widget.use_cursor, BooleanInput)

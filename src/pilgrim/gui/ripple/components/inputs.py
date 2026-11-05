@@ -67,7 +67,7 @@ class RippleInputsWidget(InputsWidget):
     name: StringInput
     scope_resource: VisaResourceInput
     channel: IntegerInput
-    vin: IntegerInput
+    vin: ScientificInput
     loads: ListInput
     horizontal_divs: ListInput
     bandwidths: ListInput
