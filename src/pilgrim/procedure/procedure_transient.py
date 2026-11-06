@@ -48,6 +48,8 @@ VMIN_COLUMN = "Min Vmin (mV)"
 PK2PK_COLUMN = "Mean Vpk2pk (mV)"
 OVERSHOOT_COLUMN = "Overshoot (%)"
 UNDERSHOOT_COLUMN = "Undershoot (%)"
+IMAX_COLUMN = "Max Imax (A)"
+IMIN_COLUMN = "Min Imin (A)"
 RISE_TIME_COLUMN = "Mean Rise Time (us)"
 FALL_TIME_COLUMN = "Mean Fall Time (us)"
 CAPTURE_COLUMN = "Capture"
@@ -70,8 +72,12 @@ class Result(NamedTuple):
     #: The statistic of that measurement over all acquisitions, as the measurement interface
     #: names it.
     statistic: str
-    #: The factor from the volts or seconds the scope reads to the unit of the column.
+    #: The factor from the volts or seconds the scope reads to the unit of the column; a
+    #: current is first taken from the volts the scope reads to amperes with ``a2v_ratio``.
     scale: float
+    #: Whether the column holds a current: the scope reads it as the volts of the current
+    #: sense on Iout, which ``a2v_ratio`` converts to amperes.
+    current: bool = False
 
 
 #: The results read from the scope at every input; the overshoot and undershoot columns are
@@ -81,6 +87,8 @@ RESULTS = [
     Result(VMAX_COLUMN, VOUT, "MAXIMUM", "maximum", 1e3),
     Result(VMIN_COLUMN, VOUT, "MINIMUM", "minimum", 1e3),
     Result(PK2PK_COLUMN, VOUT, "PK2PK", "mean", 1e3),
+    Result(IMAX_COLUMN, IOUT, "MAXIMUM", "maximum", 1, current=True),
+    Result(IMIN_COLUMN, IOUT, "MINIMUM", "minimum", 1, current=True),
     Result(RISE_TIME_COLUMN, IOUT, "RISETIME", "mean", 1e6),
     Result(FALL_TIME_COLUMN, IOUT, "FALLTIME", "mean", 1e6),
 ]
@@ -183,12 +191,13 @@ class TransientProcedure(Procedure):
     current, Iout, at every input of :attr:`INPUTS`.
 
     Startup stops the scope, makes sure it measures the mean, maximum, minimum and peak-to-peak
-    of ``vout_channel`` and the rise and fall times of ``iout_channel``, adding the measurements
-    it lacks to those already set up, e.g. from the front panel, see
+    of ``vout_channel`` and the maximum, minimum and rise and fall times of ``iout_channel``,
+    adding the measurements it lacks to those already set up, e.g. from the front panel, see
     :meth:`add_missing_measurements`, and, when ``use_cursor`` is set, shows the horizontal bar
     cursors on ``vout_channel`` at ``cursor_lo_abs`` and ``cursor_hi_abs`` volts, see
     :meth:`show_cursors`; otherwise it hides them. The AFG is set to a pulse with its output
-    off, see :meth:`set_up_afg`.
+    off, see :meth:`set_up_afg`. The scope reads Iout as the volts of a current sense, which
+    ``a2v_ratio``, in amperes per volt, converts to the amperes of the current columns.
 
     Execute goes through :attr:`INPUTS` in order, see :meth:`execute`. With ``safe_mode`` set,
     the procedure starts the acquisition and pauses once the instruments are set for an input,
@@ -239,6 +248,11 @@ class TransientProcedure(Procedure):
         maximum=8,
         description="Scope channel of the load current",
     )
+    a2v_ratio = FloatParameter(
+        "Amp-to-volt ratio",
+        default=100,
+        description="Amperes of load current per volt read on the Iout channel",
+    )
     safe_mode = BooleanParameter(
         "Run in safe mode",
         default=True,
@@ -283,6 +297,8 @@ class TransientProcedure(Procedure):
         PK2PK_COLUMN,
         OVERSHOOT_COLUMN,
         UNDERSHOOT_COLUMN,
+        IMAX_COLUMN,
+        IMIN_COLUMN,
         RISE_TIME_COLUMN,
         FALL_TIME_COLUMN,
         CAPTURE_COLUMN,
@@ -294,10 +310,10 @@ class TransientProcedure(Procedure):
             # edge is a bool: 0 for rising edge, 1 for falling edge
             # edge also doubles as a decision for 1: Vout channel param or 0: Iout channel param
             # specifically, for 1 kHz inputs, the trigger is set to the Vout channel and falling
-            [1, 148, 85, 2.580, 2.380, 100, 30, 1, 72],  # 50-100 load @ 1 kHz
-            [100, 149, 84, 2.580, 2.380, 4, 50, 0, 72],  # 50-100 load @ 100 kHz
-            [500, 150, 80, 0.400, 0.400, 1, 50, 0, 72],  # 50-100 load @ 500 kHz
-            [1000, 159, 69, 0.200, 0.200, 0.4, 50, 0, 72],  # 50-100 load @ 1 MHz
+            [1, 148, 85, 2.580, 2.380, 100, 30, 1, 144],  # 50-100 load @ 1 kHz
+            [100, 149, 84, 2.580, 2.380, 4, 50, 0, 144],  # 50-100 load @ 100 kHz
+            [500, 150, 80, 0.400, 0.400, 1, 50, 0, 144],  # 50-100 load @ 500 kHz
+            [1000, 159, 69, 0.200, 0.200, 0.4, 50, 0, 144],  # 50-100 load @ 1 MHz
             [1, 113, 49, 2.580, 2.180, 100, 30, 1, 108],  # 25-75 load @ 1 kHz
             [100, 113, 49, 2.380, 2.180, 4, 50, 0, 108],  # 25-75 load @ 100 kHz
             [500, 120, 39, 0.400, 0.400, 1, 50, 0, 108],  # 25-75 load @ 500 kHz
@@ -649,8 +665,8 @@ class TransientProcedure(Procedure):
         :returns: The file name, e.g. ``"12Vin transient 85to148mV 1kHz.png"``, with ``vin``
             and the levels written without trailing zeros.
         """
-        levels = f"{current.low:g}to{current.high:g}mV"
-        return f"{self.vin:g}Vin {self.name} {levels} {current.frequency_text}.png"
+        levels = f"{current.low:g}-{current.high:g}mV"
+        return f"{self.vin:g}Vin {self.name} {self.duty_cycle}D {current.frequency_text} {levels} single pulse.png"
 
     def _source_of(self, signal: str) -> str:
         """Return the scope channel of a signal, e.g. ``"CH1"`` for :data:`VOUT`."""
@@ -735,8 +751,8 @@ class TransientProcedure(Procedure):
         The overshoot and undershoot are Max Vmax and Min Vmin relative to Mean Vmean, all read
         for this row, as percentages of that mean, see :func:`overshoot_percent` and
         :func:`undershoot_percent`; they are derived from the values as read, in volts. Every
-        value is then scaled to the unit of its column and rounded to :data:`RESULT_DECIMALS`
-        decimal places.
+        value is then scaled to the unit of its column, see :meth:`_scale`, and rounded to
+        :data:`RESULT_DECIMALS` decimal places.
 
         :param recorded: The measurements by results column.
         :param populations: The populations by measurement number the statistics come from.
@@ -755,10 +771,23 @@ class TransientProcedure(Procedure):
         overshoot = overshoot_percent(values[VMAX_COLUMN], values[VMEAN_COLUMN])
         undershoot = undershoot_percent(values[VMIN_COLUMN], values[VMEAN_COLUMN])
         log.info(f"Overshoot {overshoot} %, undershoot {undershoot} %.")
-        results = {result.column: values[result.column] * result.scale for result in RESULTS}
+        results = {result.column: values[result.column] * self._scale(result) for result in RESULTS}
         results[OVERSHOOT_COLUMN] = overshoot
         results[UNDERSHOOT_COLUMN] = undershoot
         return {column: round(value, RESULT_DECIMALS) for column, value in results.items()}
+
+    def _scale(self, result: Result) -> float:
+        """Return the factor from the value the scope reads to the unit of a result's column.
+
+        A current is read as the volts of the current sense on ``iout_channel``, so
+        ``a2v_ratio`` takes it to amperes before the scale of the result applies.
+
+        :param result: The result.
+        :returns: The factor.
+        """
+        if result.current:
+            return result.scale * self.a2v_ratio
+        return result.scale
 
     def _attach_measurements(self) -> list[TektronixMSO456Measurement]:
         """Return interfaces to the measurements on the scope, in the order the scope lists them.

@@ -22,8 +22,8 @@ SCOPE_ID = "TEKTRONIX,MSO58,C031408,CF:91.1CT FV:1.34.8"
 AFG_ID = "TEKTRONIX,AFG31051,C012345,SCPI:99.0 FV:1.6.2"
 #: The directories that exist on the mock scope: the default scope capture directory.
 DEFAULT_DIRECTORIES = ["C:/Temp", "C:/Temp/Transient"]
-#: The measurements the scope lists by default: the six the procedure requires.
-DEFAULT_NAMES = [f"MEAS{number}" for number in range(1, 7)]
+#: The measurements the scope lists by default: the eight the procedure requires.
+DEFAULT_NAMES = [f"MEAS{number}" for number in range(1, 9)]
 #: The ``(type, source)`` of the default measurements by number: Vout on CH1, Iout on CH2.
 DEFAULT_KINDS = {
     1: ("MEAN", "CH1"),
@@ -32,10 +32,13 @@ DEFAULT_KINDS = {
     4: ("PK2PK", "CH1"),
     5: ("RISETIME", "CH2"),
     6: ("FALLTIME", "CH2"),
+    7: ("MAXIMUM", "CH2"),
+    8: ("MINIMUM", "CH2"),
 }
 #: The ``(mean, maximum, minimum)`` the default measurements read: a 5 V rail that rises to
 #: 5.5 V and dips to 4 V with 0.25 V peak-to-peak, and a load current with a 1.5 us rise time
-#: and a 2.5 us fall time.
+#: and a 2.5 us fall time, sensed between 85 mV and 148 mV, 8.5 A and 14.8 A at the default
+#: amp-to-volt ratio.
 DEFAULT_READINGS = {
     1: (5.0, 5.2, 4.8),
     2: (5.4, 5.5, 5.3),
@@ -43,6 +46,8 @@ DEFAULT_READINGS = {
     4: (0.25, 0.3, 0.2),
     5: (1.5e-6, 1.6e-6, 1.4e-6),
     6: (2.5e-6, 2.6e-6, 2.4e-6),
+    7: (0.14, 0.148, 0.13),
+    8: (0.09, 0.1, 0.085),
 }
 #: The results the default readings give, in the units of the columns.
 DEFAULT_VALUES = {
@@ -52,6 +57,8 @@ DEFAULT_VALUES = {
     "Mean Vpk2pk (mV)": 250.0,
     "Overshoot (%)": 10.0,
     "Undershoot (%)": -20.0,
+    "Max Imax (A)": 14.8,
+    "Min Imin (A)": 8.5,
     "Mean Rise Time (us)": 1.5,
     "Mean Fall Time (us)": 2.5,
 }
@@ -268,7 +275,7 @@ def test_parameters_have_defaults() -> None:
     assert procedure.name == "transient"
     assert (procedure.afg_resource, procedure.scope_resource) == ("", "")
     assert (procedure.vin, procedure.duty_cycle) == (0, 50)
-    assert (procedure.vout_channel, procedure.iout_channel) == (1, 2)
+    assert (procedure.vout_channel, procedure.iout_channel, procedure.a2v_ratio) == (1, 2, 100)
     assert (procedure.safe_mode, procedure.use_cursor) == (True, True)
     assert (procedure.cursor_hi_abs, procedure.cursor_lo_abs) == (0, 0)
     assert (procedure.pop_min, procedure.scope_capture_dir) == (300, "C:/Temp/Transient/")
@@ -285,6 +292,8 @@ def test_data_columns_are_in_order() -> None:
         "Mean Vpk2pk (mV)",
         "Overshoot (%)",
         "Undershoot (%)",
+        "Max Imax (A)",
+        "Min Imin (A)",
         "Mean Rise Time (us)",
         "Mean Fall Time (us)",
         "Capture",
@@ -302,6 +311,8 @@ def test_data_column_units_are_pint_units() -> None:
         "Max Vmax (mV)": "millivolt",
         "Min Vmin (mV)": "millivolt",
         "Mean Vpk2pk (mV)": "millivolt",
+        "Max Imax (A)": "ampere",
+        "Min Imin (A)": "ampere",
         "Mean Rise Time (us)": "microsecond",
         "Mean Fall Time (us)": "microsecond",
     }
@@ -363,6 +374,8 @@ def test_startup_connects_and_sets_up_both_instruments(
         ("add_measurement", 4),
         ("add_measurement", 5),
         ("add_measurement", 6),
+        ("add_measurement", 7),
+        ("add_measurement", 8),
         ("set_levels", 3, 4.8, 5.25),
         ("afg", "output_enabled", False),
         ("afg", "shape", "PULS"),
@@ -374,8 +387,10 @@ def test_startup_connects_and_sets_up_both_instruments(
         (2, "MAXIMUM", "CH3"),
         (3, "MINIMUM", "CH3"),
         (4, "PK2PK", "CH3"),
-        (5, "RISETIME", "CH4"),
-        (6, "FALLTIME", "CH4"),
+        (5, "MAXIMUM", "CH4"),
+        (6, "MINIMUM", "CH4"),
+        (7, "RISETIME", "CH4"),
+        (8, "FALLTIME", "CH4"),
     ]
     assert "Cursors shown on CH3 at 4.8 V and 5.25 V." in caplog.messages
 
@@ -421,11 +436,13 @@ def test_add_missing_measurements_keeps_the_existing_ones(
         (4, "MAXIMUM", "CH1"),
         (5, "MINIMUM", "CH1"),
         (6, "PK2PK", "CH1"),
-        (7, "FALLTIME", "CH2"),
+        (7, "MAXIMUM", "CH2"),
+        (8, "MINIMUM", "CH2"),
+        (9, "FALLTIME", "CH2"),
     ]
-    assert scope.measurement_names == [f"MEAS{number}" for number in range(1, 8)]
+    assert scope.measurement_names == [f"MEAS{number}" for number in range(1, 10)]
     assert "Added scope measurement MEAS4: MAXIMUM of CH1 (Vout)." in caplog.messages
-    assert "Added scope measurement MEAS7: FALLTIME of CH2 (Iout)." in caplog.messages
+    assert "Added scope measurement MEAS9: FALLTIME of CH2 (Iout)." in caplog.messages
 
 
 def test_execute_sets_the_instruments_and_records_a_row_for_every_input(
@@ -507,10 +524,26 @@ def test_execute_sets_the_instruments_and_records_a_row_for_every_input(
     assert local.read_bytes() == f"image of {FIRST_CAPTURE}".encode()
 
 
+def test_execute_converts_the_currents_with_the_amp_to_volt_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    scope = make_scope(list(DEFAULT_NAMES), repeat(300), events)
+    procedure = make_running_procedure(
+        monkeypatch, scope, make_afg(events), inputs=TWO_INPUTS[:1], a2v_ratio=50
+    )
+    procedure.execute()
+    emit: Any = procedure.emit
+    ((_, row),) = [call.args for call in emit.call_args_list if call.args[0] == "results"]
+    # Half the amperes per volt, so half the currents; the voltages are unchanged.
+    assert (row["Max Imax (A)"], row["Min Imin (A)"]) == (7.4, 4.25)
+    assert (row["Max Vmax (mV)"], row["Min Vmin (mV)"]) == (5500.0, 4000.0)
+
+
 def test_execute_acquires_until_every_population_fills(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[tuple[Any, ...]] = []
     # Three polls until every measurement is full, then one more read after the stop.
-    polls = [(0,) * 6, (299, 300, 300, 300, 300, 300), (300,) * 6, (310,) * 6]
+    polls = [(0,) * 8, (299,) + (300,) * 7, (300,) * 8, (310,) * 8]
     populations = iter(chain.from_iterable(polls))
     scope = make_scope(list(DEFAULT_NAMES), populations, events)
     procedure = make_running_procedure(monkeypatch, scope, make_afg(events), inputs=TWO_INPUTS[:1])
@@ -592,7 +625,7 @@ def test_execute_stops_acquisition_when_asked_to_stop(monkeypatch: pytest.Monkey
 
 def test_request_pause_stops_acquisition_until_resumed(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[tuple[Any, ...]] = []
-    scope = make_scope(list(DEFAULT_NAMES), chain([0] * 6, repeat(300)), events)
+    scope = make_scope(list(DEFAULT_NAMES), chain([0] * 8, repeat(300)), events)
     procedure = make_running_procedure(monkeypatch, scope, make_afg(events), inputs=TWO_INPUTS[:1])
     record_pauses_and_resume(procedure, events)
     read = scope.read_populations.side_effect
@@ -647,7 +680,7 @@ def test_execute_without_a_required_measurement_raises(monkeypatch: pytest.Monke
     events: list[tuple[Any, ...]] = []
     scope = make_scope(["MEAS1", "MEAS2", "MEAS3", "MEAS4"], [], events)
     procedure = make_running_procedure(monkeypatch, scope, make_afg(events))
-    with pytest.raises(ValueError, match=r"no RISETIME measurement of CH2 \(Iout\)"):
+    with pytest.raises(ValueError, match=r"no MAXIMUM measurement of CH2 \(Iout\)"):
         procedure.execute()
 
 

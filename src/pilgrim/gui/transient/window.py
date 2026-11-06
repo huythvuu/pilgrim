@@ -4,6 +4,8 @@ from pilgrim.gui.window import ProcedureWindow
 from pilgrim.procedure import TransientProcedure
 from pilgrim.procedure.procedure_transient import (
     FALL_TIME_COLUMN,
+    IMAX_COLUMN,
+    IMIN_COLUMN,
     OVERSHOOT_COLUMN,
     PK2PK_COLUMN,
     RISE_TIME_COLUMN,
@@ -40,6 +42,8 @@ class TransientWindow(ProcedureWindow):
         PK2PK_COLUMN,
         OVERSHOOT_COLUMN,
         UNDERSHOOT_COLUMN,
+        IMAX_COLUMN,
+        IMIN_COLUMN,
         RISE_TIME_COLUMN,
         FALL_TIME_COLUMN,
     )

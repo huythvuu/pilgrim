@@ -44,7 +44,7 @@ def make_scope() -> MagicMock:
     The Vout measurements read a 5 V rail that rises to 5.5 V and dips to 4 V.
     """
     scope = MagicMock()
-    names = [f"MEAS{number}" for number in range(1, 7)]
+    names = [f"MEAS{number}" for number in range(1, 9)]
     kinds = {
         1: ("MEAN", "CH1"),
         2: ("MAXIMUM", "CH1"),
@@ -52,6 +52,8 @@ def make_scope() -> MagicMock:
         4: ("PK2PK", "CH1"),
         5: ("RISETIME", "CH2"),
         6: ("FALLTIME", "CH2"),
+        7: ("MAXIMUM", "CH2"),
+        8: ("MINIMUM", "CH2"),
     }
     scope.measurement_names = names
     scope.measurements = {}

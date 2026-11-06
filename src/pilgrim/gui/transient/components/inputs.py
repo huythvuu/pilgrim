@@ -16,6 +16,7 @@ INPUTS = (
     "duty_cycle",
     "vout_channel",
     "iout_channel",
+    "a2v_ratio",
     "safe_mode",
     "use_cursor",
     "cursor_hi_abs",
@@ -50,6 +51,7 @@ class TransientInputsWidget(InputsWidget):
     duty_cycle: IntegerInput
     vout_channel: IntegerInput
     iout_channel: IntegerInput
+    a2v_ratio: ScientificInput
     safe_mode: BooleanInput
     use_cursor: BooleanInput
     cursor_hi_abs: ScientificInput
